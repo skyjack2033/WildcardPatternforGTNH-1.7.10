@@ -29,7 +29,7 @@ public abstract class ItemEncodedPatternMixin {
         if (!WildcardPatternGenerator.isWildcardPattern(item)) {
             return;
         }
-        cir.setReturnValue(WildcardPatternGenerator.getDisplayDetails(item, world));
+        cir.setReturnValue(WildcardPatternGenerator.getDetailsForItem(item, world));
     }
 
     @Inject(method = "getOutput", at = @At("HEAD"), cancellable = true)
@@ -37,7 +37,7 @@ public abstract class ItemEncodedPatternMixin {
         if (!WildcardPatternGenerator.isWildcardPattern(item)) {
             return;
         }
-        cir.setReturnValue(WildcardPatternGenerator.getRepresentativeOutput(item));
+        cir.setReturnValue(WildcardPatternGenerator.getOutputForItem(item, null));
     }
 
     @Inject(method = "getOutputAE", at = @At("HEAD"), cancellable = true)
@@ -47,7 +47,7 @@ public abstract class ItemEncodedPatternMixin {
         if (!WildcardPatternGenerator.isWildcardPattern(item)) {
             return;
         }
-        ItemStack output = WildcardPatternGenerator.getRepresentativeOutput(item);
+        ItemStack output = WildcardPatternGenerator.getOutputForItem(item, null);
         cir.setReturnValue(output == null ? null : AEItemStack.create(output.copy()));
     }
 

@@ -65,8 +65,7 @@ public class ItemWildcardPattern extends ItemEncodedPattern {
 
     @Override
     public ICraftingPatternDetails getPatternForItem(ItemStack stack, World world) {
-        WildcardPatternGenerator.markAsWildcard(stack);
-        return WildcardPatternGenerator.getDisplayDetails(stack, world);
+        return WildcardPatternGenerator.getDetailsForItem(stack, world);
     }
 
     @Override
@@ -74,8 +73,7 @@ public class ItemWildcardPattern extends ItemEncodedPattern {
         if (!WildcardPatternGenerator.isWildcardPattern(item)) {
             return super.getOutput(item);
         }
-        WildcardPatternGenerator.markAsWildcard(item);
-        return WildcardPatternGenerator.getRepresentativeOutput(item);
+        return WildcardPatternGenerator.getOutputForItem(item, null);
     }
 
     @Override

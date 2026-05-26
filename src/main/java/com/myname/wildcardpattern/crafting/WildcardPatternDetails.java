@@ -81,7 +81,7 @@ public class WildcardPatternDetails implements ICraftingPatternDetails {
         ItemStack pattern = this.getPattern();
         int result = pattern.getItem() != null ? System.identityHashCode(pattern.getItem()) : 0;
         result = 31 * result + pattern.getItemDamage();
-        result = 31 * result + (pattern.getTagCompound() == null ? 0 : pattern.getTagCompound().toString().hashCode());
+        result = 31 * result + WildcardPatternGenerator.getPatternIdentity(pattern).hashCode();
         return result;
     }
 
@@ -105,6 +105,11 @@ public class WildcardPatternDetails implements ICraftingPatternDetails {
         }
         if (left.getItem() != right.getItem() || left.getItemDamage() != right.getItemDamage()) {
             return false;
+        }
+        String leftId = WildcardPatternGenerator.getGeneratedPatternId(left);
+        String rightId = WildcardPatternGenerator.getGeneratedPatternId(right);
+        if (!leftId.isEmpty() || !rightId.isEmpty()) {
+            return leftId.equals(rightId);
         }
         NBTTagCompound leftTag = left.getTagCompound();
         NBTTagCompound rightTag = right.getTagCompound();

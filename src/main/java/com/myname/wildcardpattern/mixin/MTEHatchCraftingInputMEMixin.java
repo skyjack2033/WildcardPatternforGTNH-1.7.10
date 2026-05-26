@@ -1,8 +1,10 @@
 package com.myname.wildcardpattern.mixin;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -13,14 +15,22 @@ import appeng.api.networking.crafting.ICraftingPatternDetails;
 import appeng.api.networking.crafting.ICraftingProvider;
 import appeng.api.networking.crafting.ICraftingProviderHelper;
 import appeng.api.storage.data.IAEItemStack;
+import com.glodblock.github.common.item.ItemFluidDrop;
+import com.glodblock.github.common.item.ItemFluidPacket;
 import com.myname.wildcardpattern.crafting.WildcardPatternGenerator;
-import gregtech.common.tileentities.machines.MTEHatchCraftingInputME;
+import gregtech.api.enums.GTValues;
+import gregtech.api.logic.ProcessingLogic;
 import gregtech.api.objects.GTDualInputPattern;
+import gregtech.api.util.GTUtility;
+import gregtech.common.tileentities.machines.MTEHatchCraftingInputME;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.InventoryCrafting;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
 import net.minecraft.world.World;
+import net.minecraftforge.common.util.Constants.NBT;
+import net.minecraftforge.fluids.FluidStack;
 
 @Mixin(value = MTEHatchCraftingInputME.class, remap = false)
 public abstract class MTEHatchCraftingInputMEMixin {
@@ -34,6 +44,13 @@ public abstract class MTEHatchCraftingInputMEMixin {
 
     @Shadow
     private boolean justHadNewItems;
+
+    @Shadow
+    @Final
+    private boolean supportFluids;
+
+    @Shadow
+    public List<ProcessingLogic> processingLogics;
 
     @Shadow
     public abstract IInventory getPatterns();
@@ -51,6 +68,8 @@ public abstract class MTEHatchCraftingInputMEMixin {
         if (!isActive()) {
             return;
         }
+
+        this.patternDetailsPatternSlotMap.values().removeIf(s -> s instanceof WildcardPatternSlot);
 
         IInventory patterns = getPatterns();
         World world = getWorld();
@@ -80,26 +99,52 @@ public abstract class MTEHatchCraftingInputMEMixin {
     @Inject(method = "pushPattern", at = @At("HEAD"), cancellable = true)
     private void wildcardpattern$pushExpandedPattern(ICraftingPatternDetails patternDetails, InventoryCrafting table,
         org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        if (!hasWildcardPattern() || patternDetails == null) {
+        if (patternDetails == null) {
+            cir.setReturnValue(false);
             return;
         }
 
+        boolean hasWildcardPattern = hasWildcardPattern();
+        boolean isWildcardRequest = isWildcardPatternDetails(patternDetails);
         MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> slot = this.patternDetailsPatternSlotMap.get(patternDetails);
-        if (slot == null) {
+        if (slot != null && !isCurrentInternalSlot(slot)) {
+            MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> detachedSlot = slot;
+            this.patternDetailsPatternSlotMap.values()
+                .removeIf(s -> s == detachedSlot);
+            slot = null;
+        }
+
+        if (slot == null && (hasWildcardPattern || isWildcardRequest)) {
             slot = findWildcardPatternSlot(patternDetails);
             if (slot != null) {
                 this.patternDetailsPatternSlotMap.put(patternDetails, slot);
             }
         }
         if (slot == null) {
+            cir.setReturnValue(false);
+            return;
+        }
+        if (!hasWildcardPattern && !isWildcardRequest) {
             return;
         }
         if (slot instanceof WildcardPatternSlot wildcardSlot) {
+            if (!wildcardSlot.canAcceptPattern(patternDetails)) {
+                cir.setReturnValue(false);
+                return;
+            }
+            String previousActiveId = wildcardSlot.getActiveGeneratedPatternId();
             wildcardSlot.setActivePatternDetails(patternDetails);
+            if (!previousActiveId.equals(wildcardSlot.getActiveGeneratedPatternId())) {
+                removeInventoryRecipeCache(slot);
+            }
         }
 
         MTEHatchCraftingInputME hatch = (MTEHatchCraftingInputME) (Object) this;
         if (!hatch.isActive() || !hatch.getBaseMetaTileEntity().isAllowedToWork()) {
+            cir.setReturnValue(false);
+            return;
+        }
+        if (hasUnsupportedFluidPacket(table)) {
             cir.setReturnValue(false);
             return;
         }
@@ -121,9 +166,36 @@ public abstract class MTEHatchCraftingInputMEMixin {
     @Inject(method = "loadNBTData", at = @At("RETURN"))
     private void wildcardpattern$registerLoadedExpandedPatternMap(NBTTagCompound tag, CallbackInfo ci) {
         IInventory patterns = getPatterns();
+        Map<Integer, NBTTagCompound> activePatternTags = readSavedActivePatternTags(tag);
+        boolean hasItems = false;
         for (int index = 0; index < this.internalInventory.length && index < patterns.getSizeInventory(); index++) {
-            registerExpandedPatterns(index, patterns.getStackInSlot(index));
+            registerExpandedPatterns(index, patterns.getStackInSlot(index), activePatternTags.get(Integer.valueOf(index)));
+            MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> slot = this.internalInventory[index];
+            if (slot != null && (slot.getItemInputs().length > 0 || slot.getFluidInputs().length > 0)) {
+                hasItems = true;
+            }
         }
+        if (hasItems) {
+            this.justHadNewItems = true;
+        }
+    }
+
+    private static boolean isWildcardPatternDetails(ICraftingPatternDetails patternDetails) {
+        ItemStack pattern = patternDetails == null ? null : patternDetails.getPattern();
+        return WildcardPatternGenerator.isWildcardPattern(pattern) || WildcardPatternGenerator.isGeneratedPattern(pattern);
+    }
+
+    private boolean hasUnsupportedFluidPacket(InventoryCrafting table) {
+        if (this.supportFluids || table == null) {
+            return false;
+        }
+        for (int index = 0; index < table.getSizeInventory(); index++) {
+            ItemStack itemStack = table.getStackInSlot(index);
+            if (itemStack != null && itemStack.getItem() instanceof ItemFluidPacket) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean hasWildcardPattern() {
@@ -137,8 +209,23 @@ public abstract class MTEHatchCraftingInputMEMixin {
     }
 
     private void registerExpandedPatterns(int index, ItemStack stack) {
-        if (index < 0 || index >= this.internalInventory.length || !WildcardPatternGenerator.isWildcardPattern(stack)) {
+        registerExpandedPatterns(index, stack, null);
+    }
+
+    private void registerExpandedPatterns(int index, ItemStack stack, NBTTagCompound savedActivePatternTag) {
+        if (index < 0 || index >= this.internalInventory.length) {
             return;
+        }
+
+        removeDetachedWildcardMappings();
+
+        if (!WildcardPatternGenerator.isWildcardPattern(stack)) {
+            return;
+        }
+
+        MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> targetSlot = this.internalInventory[index];
+        if (targetSlot != null) {
+            this.patternDetailsPatternSlotMap.values().removeIf(s -> s == targetSlot);
         }
 
         MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> slot = getOrCreateWildcardSlot(index);
@@ -146,9 +233,54 @@ public abstract class MTEHatchCraftingInputMEMixin {
             return;
         }
 
-        World world = getWorld();
-        for (ICraftingPatternDetails details : getExpandedDetails(slot, stack, world)) {
+        if (slot != targetSlot) {
+            this.patternDetailsPatternSlotMap.values().removeIf(s -> s == slot);
+        }
+
+        List<ICraftingPatternDetails> detailsList = getExpandedDetails(slot, stack, getWorld());
+        if (slot instanceof WildcardPatternSlot wildcardSlot) {
+            wildcardSlot.restoreActivePatternDetails(savedActivePatternTag, detailsList);
+        }
+        for (ICraftingPatternDetails details : detailsList) {
             this.patternDetailsPatternSlotMap.put(details, slot);
+        }
+    }
+
+    private void removeDetachedWildcardMappings() {
+        this.patternDetailsPatternSlotMap.values()
+            .removeIf(s -> s instanceof WildcardPatternSlot && !isCurrentInternalSlot(s));
+    }
+
+    private boolean isCurrentInternalSlot(MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> slot) {
+        for (MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> current : this.internalInventory) {
+            if (current == slot) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Map<Integer, NBTTagCompound> readSavedActivePatternTags(NBTTagCompound source) {
+        Map<Integer, NBTTagCompound> result = new HashMap<>();
+        if (source == null || !source.hasKey("internalInventory", NBT.TAG_LIST)) {
+            return result;
+        }
+        NBTTagList inventory = source.getTagList("internalInventory", NBT.TAG_COMPOUND);
+        for (int index = 0; index < inventory.tagCount(); index++) {
+            NBTTagCompound slotWrapper = inventory.getCompoundTagAt(index);
+            int patternSlot = slotWrapper.getInteger("patternSlot");
+            NBTTagCompound slotTag = slotWrapper.getCompoundTag("patternSlotNBT");
+            if (slotTag.hasKey(WildcardPatternSlot.KEY_ACTIVE_PATTERN, NBT.TAG_COMPOUND)
+                || slotTag.hasKey(WildcardPatternSlot.KEY_ACTIVE_PATTERN_ID)) {
+                result.put(Integer.valueOf(patternSlot), slotTag);
+            }
+        }
+        return result;
+    }
+
+    private void removeInventoryRecipeCache(MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> slot) {
+        for (ProcessingLogic processingLogic : this.processingLogics) {
+            processingLogic.removeInventoryRecipeCache(slot);
         }
     }
 
@@ -226,6 +358,11 @@ public abstract class MTEHatchCraftingInputMEMixin {
         if (leftPattern.getItem() != rightPattern.getItem() || leftPattern.getItemDamage() != rightPattern.getItemDamage()) {
             return false;
         }
+        String leftId = WildcardPatternGenerator.getGeneratedPatternId(leftPattern);
+        String rightId = WildcardPatternGenerator.getGeneratedPatternId(rightPattern);
+        if (!leftId.isEmpty() || !rightId.isEmpty()) {
+            return leftId.equals(rightId);
+        }
         NBTTagCompound leftTag = leftPattern.getTagCompound();
         NBTTagCompound rightTag = rightPattern.getTagCompound();
         if (leftTag == rightTag) {
@@ -244,7 +381,12 @@ public abstract class MTEHatchCraftingInputMEMixin {
 
     private static final class WildcardPatternSlot extends MTEHatchCraftingInputME.PatternSlot<MTEHatchCraftingInputME> {
 
+        private static final String KEY_ACTIVE_PATTERN = "WildcardActivePattern";
+        private static final String KEY_ACTIVE_PATTERN_ID = "WildcardActivePatternId";
+
         private ICraftingPatternDetails activePatternDetails;
+        private ItemStack activePatternStack;
+        private String activeGeneratedPatternId = "";
         private String cachedSignature;
         private List<ICraftingPatternDetails> cachedExpandedDetails = java.util.Collections.emptyList();
 
@@ -259,7 +401,7 @@ public abstract class MTEHatchCraftingInputMEMixin {
                         this.itemInventory.add(itemStack.copy());
                     }
                 }
-                for (net.minecraftforge.fluids.FluidStack fluidStack : originalSlot.getFluidInputs()) {
+                for (FluidStack fluidStack : originalSlot.getFluidInputs()) {
                     if (fluidStack != null) {
                         this.fluidInventory.add(fluidStack.copy());
                     }
@@ -269,37 +411,357 @@ public abstract class MTEHatchCraftingInputMEMixin {
 
         private void setActivePatternDetails(ICraftingPatternDetails activePatternDetails) {
             this.activePatternDetails = activePatternDetails;
+            setActivePatternStack(activePatternDetails == null ? null : activePatternDetails.getPattern());
+        }
+
+        private void setActivePatternStack(ItemStack activePattern) {
+            this.activePatternStack = activePattern == null ? null : activePattern.copy();
+            this.activeGeneratedPatternId = WildcardPatternGenerator.getGeneratedPatternId(activePattern);
+        }
+
+        private String getActiveGeneratedPatternId() {
+            return this.activeGeneratedPatternId;
         }
 
         private List<ICraftingPatternDetails> getExpandedDetails(ItemStack patternStack, World world) {
             String signature = getPatternSignature(patternStack);
-            if (!signature.equals(this.cachedSignature)) {
+            if (!signature.equals(this.cachedSignature) || this.cachedExpandedDetails.isEmpty()) {
                 this.cachedSignature = signature;
                 this.cachedExpandedDetails = WildcardPatternGenerator.generateAllDetails(patternStack, world);
             }
             return this.cachedExpandedDetails;
         }
 
+        private boolean canAcceptPattern(ICraftingPatternDetails patternDetails) {
+            if (patternDetails == null || isEmpty()) {
+                return true;
+            }
+            String requestedId = WildcardPatternGenerator.getGeneratedPatternId(patternDetails.getPattern());
+            if (requestedId.isEmpty()) {
+                return false;
+            }
+            if (this.activeGeneratedPatternId.isEmpty()) {
+                setActivePatternDetails(recoverActiveDetails(getCachedOrGeneratedDetails()));
+            }
+            return requestedId.equals(this.activeGeneratedPatternId);
+        }
+
+        private void restoreActivePatternDetails(
+            NBTTagCompound savedActivePatternTag,
+            List<ICraftingPatternDetails> detailsList) {
+            if (this.activePatternDetails != null || !hasStoredInputs()) {
+                return;
+            }
+            String savedId = savedActivePatternTag == null ? "" : savedActivePatternTag.getString(KEY_ACTIVE_PATTERN_ID);
+            ItemStack savedActivePattern = null;
+            if (savedActivePatternTag != null && savedActivePatternTag.hasKey(KEY_ACTIVE_PATTERN, NBT.TAG_COMPOUND)) {
+                savedActivePattern = ItemStack.loadItemStackFromNBT(savedActivePatternTag.getCompoundTag(KEY_ACTIVE_PATTERN));
+                if (savedId.isEmpty()) {
+                    savedId = WildcardPatternGenerator.getGeneratedPatternId(savedActivePattern);
+                }
+            }
+
+            ICraftingPatternDetails restored = findMatchingPatternDetails(savedId, detailsList);
+            if (restored == null) {
+                restored = findMatchingPatternDetails(savedActivePattern, detailsList);
+            }
+            if (restored == null && savedActivePattern != null) {
+                ICraftingPatternDetails savedDetails = createDetailsFromPattern(savedActivePattern);
+                if (savedDetails != null && inputsMatchSlot(savedDetails)) {
+                    restored = savedDetails;
+                }
+            }
+            if (restored == null) {
+                restored = recoverActiveDetails(detailsList);
+            }
+            setActivePatternDetails(restored);
+        }
+
         @Override
         public ICraftingPatternDetails getPatternDetails() {
-            return this.activePatternDetails != null ? this.activePatternDetails : super.getPatternDetails();
+            if (this.activePatternDetails != null) {
+                if (!hasStoredInputs()) {
+                    setActivePatternDetails(null);
+                    return super.getPatternDetails();
+                }
+                return this.activePatternDetails;
+            }
+            if (hasStoredInputs()) {
+                if (this.activePatternStack != null) {
+                    ICraftingPatternDetails savedDetails = createDetailsFromPattern(this.activePatternStack);
+                    if (savedDetails != null && inputsMatchSlot(savedDetails)) {
+                        setActivePatternDetails(savedDetails);
+                        return this.activePatternDetails;
+                    }
+                }
+                setActivePatternDetails(recoverActiveDetails(getCachedOrGeneratedDetails()));
+                return this.activePatternDetails;
+            }
+            return super.getPatternDetails();
+        }
+
+        @Override
+        public NBTTagCompound writeToNBT(NBTTagCompound nbt) {
+            boolean hasInputs = hasStoredInputs();
+            NBTTagCompound written = super.writeToNBT(nbt);
+            if (hasInputs && this.activePatternDetails == null) {
+                setActivePatternDetails(recoverActiveDetails(getCachedOrGeneratedDetails()));
+            }
+            ItemStack activePattern = this.activePatternStack;
+            if (hasInputs && activePattern != null && !this.activeGeneratedPatternId.isEmpty()) {
+                NBTTagCompound activeTag = new NBTTagCompound();
+                activePattern.writeToNBT(activeTag);
+                written.setTag(KEY_ACTIVE_PATTERN, activeTag);
+                written.setString(KEY_ACTIVE_PATTERN_ID, this.activeGeneratedPatternId);
+            } else {
+                written.removeTag(KEY_ACTIVE_PATTERN);
+                written.removeTag(KEY_ACTIVE_PATTERN_ID);
+            }
+            return written;
+        }
+
+        private List<ICraftingPatternDetails> getCachedOrGeneratedDetails() {
+            if (this.pattern == null) {
+                return this.cachedExpandedDetails;
+            }
+            World world = this.parentMTE.getBaseMetaTileEntity().getWorld();
+            if (world == null) {
+                return this.cachedExpandedDetails;
+            }
+            return getExpandedDetails(this.pattern, world);
+        }
+
+        private ICraftingPatternDetails recoverActiveDetails(List<ICraftingPatternDetails> detailsList) {
+            if (detailsList == null || detailsList.isEmpty()) {
+                return null;
+            }
+            ICraftingPatternDetails recovered = null;
+            for (ICraftingPatternDetails details : detailsList) {
+                if (!inputsMatchSlot(details)) {
+                    continue;
+                }
+                if (recovered != null && !arePatternStacksEqual(recovered.getPattern(), details.getPattern())) {
+                    return null;
+                }
+                recovered = details;
+            }
+            return recovered;
+        }
+
+        private ICraftingPatternDetails createDetailsFromPattern(ItemStack patternStack) {
+            if (patternStack == null) {
+                return null;
+            }
+            World world = this.parentMTE.getBaseMetaTileEntity().getWorld();
+            return WildcardPatternGenerator.createDetailForCurrentStack(patternStack.copy(), world);
+        }
+
+        private boolean inputsMatchSlot(ICraftingPatternDetails details) {
+            IAEItemStack[] inputs = details == null ? null : details.getInputs();
+            if (inputs == null) {
+                return false;
+            }
+            boolean sawInput = false;
+            for (IAEItemStack input : inputs) {
+                if (input == null) {
+                    continue;
+                }
+                ItemStack inputStack = input.getItemStack();
+                if (inputStack == null) {
+                    continue;
+                }
+                sawInput = true;
+                if (inputStack.getItem() instanceof ItemFluidDrop) {
+                    FluidStack fluidStack = ItemFluidDrop.getFluidStack(inputStack);
+                    if (fluidStack == null || countStoredFluid(fluidStack) < getRequiredFluidAmount(fluidStack, inputs)) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (countStoredItems(inputStack) < getRequiredItemAmount(inputStack, inputs)) {
+                    return false;
+                }
+            }
+            return sawInput && storedItemsCoveredByPattern(inputs) && storedFluidsCoveredByPattern(inputs);
+        }
+
+        private long getRequiredItemAmount(ItemStack expected, IAEItemStack[] inputs) {
+            long required = 0L;
+            for (IAEItemStack input : inputs) {
+                if (input == null) {
+                    continue;
+                }
+                ItemStack inputStack = input.getItemStack();
+                if (inputStack == null || inputStack.getItem() instanceof ItemFluidDrop
+                    || !GTUtility.areStacksEqual(inputStack, expected)) {
+                    continue;
+                }
+                required += Math.max(Math.max(1L, input.getStackSize()), inputStack.stackSize);
+            }
+            return required;
+        }
+
+        private long getRequiredFluidAmount(FluidStack expected, IAEItemStack[] inputs) {
+            long required = 0L;
+            for (IAEItemStack input : inputs) {
+                if (input == null) {
+                    continue;
+                }
+                ItemStack inputStack = input.getItemStack();
+                if (inputStack == null || !(inputStack.getItem() instanceof ItemFluidDrop)) {
+                    continue;
+                }
+                FluidStack fluidStack = ItemFluidDrop.getFluidStack(inputStack);
+                if (fluidStack != null && GTUtility.areFluidsEqual(fluidStack, expected)) {
+                    required += Math.max(1L, fluidStack.amount);
+                }
+            }
+            return required;
+        }
+
+        private long countStoredItems(ItemStack expected) {
+            long count = 0L;
+            for (ItemStack stored : this.itemInventory) {
+                if (stored != null && stored.stackSize > 0 && GTUtility.areStacksEqual(stored, expected)) {
+                    count += stored.stackSize;
+                }
+            }
+            return count;
+        }
+
+        private long countStoredFluid(FluidStack expected) {
+            long amount = 0L;
+            for (FluidStack stored : this.fluidInventory) {
+                if (stored != null && stored.amount > 0 && GTUtility.areFluidsEqual(stored, expected)) {
+                    amount += stored.amount;
+                }
+            }
+            return amount;
+        }
+
+        private boolean storedItemsCoveredByPattern(IAEItemStack[] inputs) {
+            for (ItemStack stored : this.itemInventory) {
+                if (stored != null && stored.stackSize > 0 && !patternHasItemInput(stored, inputs)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean storedFluidsCoveredByPattern(IAEItemStack[] inputs) {
+            for (FluidStack stored : this.fluidInventory) {
+                if (stored != null && stored.amount > 0 && !patternHasFluidInput(stored, inputs)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean patternHasItemInput(ItemStack stored, IAEItemStack[] inputs) {
+            for (IAEItemStack input : inputs) {
+                if (input == null) {
+                    continue;
+                }
+                ItemStack inputStack = input.getItemStack();
+                if (inputStack != null && !(inputStack.getItem() instanceof ItemFluidDrop)
+                    && GTUtility.areStacksEqual(stored, inputStack)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean patternHasFluidInput(FluidStack stored, IAEItemStack[] inputs) {
+            for (IAEItemStack input : inputs) {
+                if (input == null) {
+                    continue;
+                }
+                ItemStack inputStack = input.getItemStack();
+                if (inputStack == null || !(inputStack.getItem() instanceof ItemFluidDrop)) {
+                    continue;
+                }
+                FluidStack fluidStack = ItemFluidDrop.getFluidStack(inputStack);
+                if (fluidStack != null && GTUtility.areFluidsEqual(stored, fluidStack)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean hasStoredInputs() {
+            return !isEmpty();
+        }
+
+        private static ICraftingPatternDetails findMatchingPatternDetails(
+            String savedId,
+            List<ICraftingPatternDetails> detailsList) {
+            if (savedId == null || savedId.isEmpty() || detailsList == null || detailsList.isEmpty()) {
+                return null;
+            }
+            for (ICraftingPatternDetails details : detailsList) {
+                if (details != null && savedId.equals(WildcardPatternGenerator.getGeneratedPatternId(details.getPattern()))) {
+                    return details;
+                }
+            }
+            return null;
+        }
+
+        private static ICraftingPatternDetails findMatchingPatternDetails(
+            ItemStack savedActivePattern,
+            List<ICraftingPatternDetails> detailsList) {
+            if (savedActivePattern == null || detailsList == null || detailsList.isEmpty()) {
+                return null;
+            }
+            for (ICraftingPatternDetails details : detailsList) {
+                if (details != null && arePatternStacksEqual(savedActivePattern, details.getPattern())) {
+                    return details;
+                }
+            }
+            return null;
+        }
+
+        private static boolean arePatternStacksEqual(ItemStack left, ItemStack right) {
+            if (left == right) {
+                return true;
+            }
+            if (left == null || right == null) {
+                return false;
+            }
+            if (left.getItem() != right.getItem() || left.getItemDamage() != right.getItemDamage()) {
+                return false;
+            }
+            String leftId = WildcardPatternGenerator.getGeneratedPatternId(left);
+            String rightId = WildcardPatternGenerator.getGeneratedPatternId(right);
+            if (!leftId.isEmpty() || !rightId.isEmpty()) {
+                return leftId.equals(rightId);
+            }
+            NBTTagCompound leftTag = left.getTagCompound();
+            NBTTagCompound rightTag = right.getTagCompound();
+            if (leftTag == rightTag) {
+                return true;
+            }
+            return leftTag != null && leftTag.equals(rightTag);
         }
 
         @Override
         public GTDualInputPattern getPatternInputs() {
             ICraftingPatternDetails details = getPatternDetails();
             GTDualInputPattern dualInputs = new GTDualInputPattern();
+            if (details == null) {
+                dualInputs.inputItems = GTValues.emptyItemStackArray;
+                dualInputs.inputFluid = GTValues.emptyFluidStackArray;
+                return dualInputs;
+            }
             ItemStack[] inputItems = this.parentMTE.getSharedItems();
-            net.minecraftforge.fluids.FluidStack[] inputFluids = gregtech.api.enums.GTValues.emptyFluidStackArray;
+            FluidStack[] inputFluids = GTValues.emptyFluidStackArray;
 
             for (IAEItemStack singleInput : details.getInputs()) {
                 if (singleInput == null) {
                     continue;
                 }
                 ItemStack singleInputItemStack = singleInput.getItemStack();
-                if (singleInputItemStack.getItem() instanceof com.glodblock.github.common.item.ItemFluidDrop) {
-                    net.minecraftforge.fluids.FluidStack fluidStack = com.glodblock.github.common.item.ItemFluidDrop
-                        .getFluidStack(singleInputItemStack);
+                if (singleInputItemStack.getItem() instanceof ItemFluidDrop) {
+                    FluidStack fluidStack = ItemFluidDrop.getFluidStack(singleInputItemStack);
                     if (fluidStack != null) {
                         inputFluids = org.apache.commons.lang3.ArrayUtils.addAll(inputFluids, fluidStack);
                     }

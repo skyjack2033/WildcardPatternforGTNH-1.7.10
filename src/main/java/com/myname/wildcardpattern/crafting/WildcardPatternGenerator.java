@@ -2,11 +2,13 @@ package com.myname.wildcardpattern.crafting;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 import appeng.api.networking.crafting.ICraftingPatternDetails;
+import appeng.api.storage.data.IAEItemStack;
 import com.myname.wildcardpattern.ModItems;
 import com.myname.wildcardpattern.item.WildcardPatternConfig;
 import com.myname.wildcardpattern.item.WildcardPatternState;
@@ -19,6 +21,7 @@ public final class WildcardPatternGenerator {
 
     private static final String KEY_WILDCARD = "WildcardPattern";
     private static final String KEY_SELECTED_MATERIAL = "WildcardSelectedMaterial";
+    public static final String KEY_GENERATED_PATTERN_ID = "WildcardGeneratedPatternId";
     private static final int MAX_RULES = 9;
 
     private WildcardPatternGenerator() {}
@@ -61,9 +64,34 @@ public final class WildcardPatternGenerator {
         return new WildcardPreviewPatternDetails(stack, getRepresentativeInput(stack), getRepresentativeOutput(stack));
     }
 
+    public static ICraftingPatternDetails getDetailsForItem(ItemStack stack, World world) {
+        if (!isWildcardPattern(stack)) {
+            return null;
+        }
+        markAsWildcard(stack);
+        if (isGeneratedPattern(stack)) {
+            return createDetailForCurrentStack(stack, world);
+        }
+        return getDisplayDetails(stack, world);
+    }
+
     public static ICraftingPatternDetails getFirstDetail(ItemStack stack, World world) {
         List<ICraftingPatternDetails> details = generateAllDetails(stack, world);
         return details.isEmpty() ? null : details.get(0);
+    }
+
+    public static ItemStack getOutputForItem(ItemStack stack, World world) {
+        if (!isWildcardPattern(stack)) {
+            return null;
+        }
+        markAsWildcard(stack);
+        if (isGeneratedPattern(stack)) {
+            ItemStack generatedOutput = getFirstCondensedOutput(createDetailForCurrentStack(stack, world));
+            if (generatedOutput != null) {
+                return generatedOutput;
+            }
+        }
+        return getRepresentativeOutput(stack);
     }
 
     public static ItemStack getRepresentativeOutput(ItemStack stack) {
@@ -83,6 +111,7 @@ public final class WildcardPatternGenerator {
         for (int ruleIndex = 0; ruleIndex < MAX_RULES; ruleIndex++) {
             result.addAll(generateRuleDetails(stack, world, ruleIndex));
         }
+        result.sort(Comparator.comparing(details -> getPatternIdentity(details == null ? null : details.getPattern())));
         return result;
     }
 
@@ -94,7 +123,7 @@ public final class WildcardPatternGenerator {
 
         List<ICraftingPatternDetails> result = new ArrayList<>();
         for (GeneratedPattern pattern : patterns) {
-            ItemStack generated = createPatternStack(stack, pattern.materialName, pattern.inputStack, pattern.outputStack);
+            ItemStack generated = createPatternStack(stack, ruleIndex, pattern.materialName, pattern.inputStack, pattern.outputStack);
             if (generated == null) {
                 continue;
             }
@@ -104,6 +133,23 @@ public final class WildcardPatternGenerator {
             }
         }
         return result;
+    }
+
+    public static String getGeneratedPatternId(ItemStack stack) {
+        NBTTagCompound tag = stack == null ? null : stack.getTagCompound();
+        return tag == null || !tag.hasKey(KEY_GENERATED_PATTERN_ID) ? "" : tag.getString(KEY_GENERATED_PATTERN_ID);
+    }
+
+    public static boolean isGeneratedPattern(ItemStack stack) {
+        return !getGeneratedPatternId(stack).isEmpty();
+    }
+
+    public static String getPatternIdentity(ItemStack stack) {
+        String generatedId = getGeneratedPatternId(stack);
+        if (!generatedId.isEmpty()) {
+            return generatedId;
+        }
+        return getStackFingerprint(stack);
     }
 
     public static List<GeneratedPattern> generateRulePreviewPatterns(ItemStack stack, int ruleIndex) {
@@ -123,8 +169,16 @@ public final class WildcardPatternGenerator {
             return Collections.emptyList();
         }
 
-        List<GeneratedPattern> result = new ArrayList<>();
+        List<String> candidates = new ArrayList<>();
         for (String candidate : collectRuleCandidatePool(input, output)) {
+            if (candidate != null) {
+                candidates.add(candidate);
+            }
+        }
+        candidates.sort(String.CASE_INSENSITIVE_ORDER);
+
+        List<GeneratedPattern> result = new ArrayList<>();
+        for (String candidate : candidates) {
             if (candidate == null || candidate.trim().isEmpty()) {
                 continue;
             }
@@ -237,6 +291,7 @@ public final class WildcardPatternGenerator {
 
     private static ItemStack createPatternStack(
         ItemStack template,
+        int ruleIndex,
         String materialName,
         ItemStack inputStack,
         ItemStack outputStack) {
@@ -255,9 +310,42 @@ public final class WildcardPatternGenerator {
         resultTag.setTag("in", inputList);
         resultTag.setTag("out", outputList);
         resultTag.setString(KEY_SELECTED_MATERIAL, materialName == null ? "" : materialName);
+        resultTag.setString(
+            KEY_GENERATED_PATTERN_ID,
+            buildGeneratedPatternId(ruleIndex, materialName, inputStack, outputStack));
         resultTag.setBoolean("crafting", false);
         resultTag.removeTag("InvalidPattern");
         return result;
+    }
+
+    private static String buildGeneratedPatternId(
+        int ruleIndex,
+        String materialName,
+        ItemStack inputStack,
+        ItemStack outputStack) {
+        return ruleIndex + "|"
+            + sanitizeIdentityPart(materialName) + "|"
+            + getStackFingerprint(inputStack) + "->"
+            + getStackFingerprint(outputStack);
+    }
+
+    private static String sanitizeIdentityPart(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\")
+            .replace("|", "\\|")
+            .replace("->", "-\\>");
+    }
+
+    private static String getStackFingerprint(ItemStack stack) {
+        if (stack == null) {
+            return "empty";
+        }
+        String itemName = String.valueOf(net.minecraft.item.Item.itemRegistry.getNameForObject(stack.getItem()));
+        if (itemName == null || itemName.isEmpty() || "null".equals(itemName)) {
+            itemName = stack.getItem() == null ? "null" : stack.getItem().getClass().getName();
+        }
+        NBTTagCompound tag = stack.getTagCompound();
+        return itemName + "@" + stack.getItemDamage() + "x" + Math.max(1, stack.stackSize)
+            + "#" + (tag == null ? "" : Integer.toHexString(tag.hashCode()));
     }
 
     private static NBTTagList buildPatternList(ItemStack stack) {
@@ -293,6 +381,15 @@ public final class WildcardPatternGenerator {
         ItemStack fallback = fallbackStack.copy();
         fallback.stackSize = 1;
         return fallback;
+    }
+
+    private static ItemStack getFirstCondensedOutput(ICraftingPatternDetails details) {
+        IAEItemStack[] outputs = details == null ? null : details.getCondensedOutputs();
+        if (outputs == null || outputs.length == 0 || outputs[0] == null) {
+            return null;
+        }
+        ItemStack output = outputs[0].getItemStack();
+        return output == null ? null : output.copy();
     }
 
     private static NBTTagCompound getOrCreateTag(ItemStack stack) {
