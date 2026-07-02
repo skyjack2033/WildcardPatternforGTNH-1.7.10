@@ -1,6 +1,7 @@
 package com.myname.wildcardpattern;
 
 import com.myname.wildcardpattern.gui.WildcardGuiHandler;
+import com.myname.wildcardpattern.crafting.CompositeWildcardRecipe;
 import com.myname.wildcardpattern.network.WildcardNetwork;
 
 import appeng.api.AEApi;
@@ -21,6 +22,7 @@ public class CommonProxy {
         ItemStack blankPattern = AEApi.instance().definitions().materials().blankPattern().maybeStack(1).orNull();
         if (blankPattern != null) {
             GameRegistry.addShapelessRecipe(new ItemStack(ModItems.wildcardPattern), blankPattern);
+            GameRegistry.addRecipe(new CompositeWildcardRecipe());
         }
         NetworkRegistry.INSTANCE.registerGuiHandler(WildcardPatternMod.instance, new WildcardGuiHandler());
     }

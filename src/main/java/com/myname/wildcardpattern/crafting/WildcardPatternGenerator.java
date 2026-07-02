@@ -29,11 +29,16 @@ public final class WildcardPatternGenerator {
     public static boolean isWildcardPattern(ItemStack stack) {
         return stack != null
             && (stack.getItem() == ModItems.wildcardPattern
+                || CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)
                 || stack.hasTagCompound() && stack.getTagCompound().getBoolean(KEY_WILDCARD));
     }
 
     public static void markAsWildcard(ItemStack stack) {
         if (stack == null) {
+            return;
+        }
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            CompositeWildcardPatternGenerator.markAsCompositeWildcard(stack);
             return;
         }
         NBTTagCompound tag = getOrCreateTag(stack);
@@ -42,10 +47,16 @@ public final class WildcardPatternGenerator {
     }
 
     public static int countPatterns(ItemStack stack) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.countPatterns(stack);
+        }
         return generateAllDetails(stack, null).size();
     }
 
     public static int countPreviewPatterns(ItemStack stack) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.countPreviewPatterns(stack);
+        }
         if (!isWildcardPattern(stack)) {
             return 0;
         }
@@ -58,6 +69,9 @@ public final class WildcardPatternGenerator {
     }
 
     public static ICraftingPatternDetails getDisplayDetails(ItemStack stack, World world) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getDisplayDetails(stack, world);
+        }
         if (!isWildcardPattern(stack)) {
             return null;
         }
@@ -65,6 +79,9 @@ public final class WildcardPatternGenerator {
     }
 
     public static ICraftingPatternDetails getDetailsForItem(ItemStack stack, World world) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getDetailsForItem(stack, world);
+        }
         if (!isWildcardPattern(stack)) {
             return null;
         }
@@ -81,6 +98,9 @@ public final class WildcardPatternGenerator {
     }
 
     public static ItemStack getOutputForItem(ItemStack stack, World world) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getOutputForItem(stack, world);
+        }
         if (!isWildcardPattern(stack)) {
             return null;
         }
@@ -95,14 +115,23 @@ public final class WildcardPatternGenerator {
     }
 
     public static ItemStack getRepresentativeOutput(ItemStack stack) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getRepresentativeOutput(stack);
+        }
         return getRepresentativeEntryStack(WildcardPatternState.getOutputEntries(stack), stack);
     }
 
     public static ItemStack getRepresentativeInput(ItemStack stack) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getRepresentativeInput(stack);
+        }
         return getRepresentativeEntryStack(WildcardPatternState.getInputEntries(stack), stack);
     }
 
     public static List<ICraftingPatternDetails> generateAllDetails(ItemStack stack, World world) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.generateAllDetails(stack, world);
+        }
         if (!isWildcardPattern(stack)) {
             return Collections.emptyList();
         }
@@ -255,6 +284,9 @@ public final class WildcardPatternGenerator {
     }
 
     public static List<String> getCandidateMaterials(ItemStack stack) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return CompositeWildcardPatternGenerator.getCandidateMaterials(stack);
+        }
         List<String> result = new ArrayList<>();
         for (int ruleIndex = 0; ruleIndex < MAX_RULES; ruleIndex++) {
             for (String materialName : getCandidateMaterials(stack, ruleIndex)) {
@@ -267,6 +299,9 @@ public final class WildcardPatternGenerator {
     }
 
     public static List<String> getCandidateMaterials(ItemStack stack, int ruleIndex) {
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            return ruleIndex == 0 ? CompositeWildcardPatternGenerator.getCandidateMaterials(stack) : Collections.emptyList();
+        }
         List<GeneratedPattern> patterns = generateRulePreviewPatterns(stack, ruleIndex);
         if (patterns.isEmpty()) {
             return Collections.emptyList();

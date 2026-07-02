@@ -24,6 +24,7 @@
 - 支持总排除与每条规则独立排除
 - 支持重复矿辞结果去重，并在去重页面显示物品所属 `mod`
 - 去重默认优先 `gregtech` 物品，同时允许玩家手动切换保留项
+- 新增 `复合通配样板`：单条通配规则可附加最多 8 个固定输入，例如 `任意锭 + 橡胶 -> 任意板`
 
 ## 使用说明
 
@@ -37,10 +38,17 @@
 4. 如存在多个相同矿辞来源，可进入去重页面选择最终保留哪个模组的物品。
 5. 保存后，样板即可参与 AE2 / GTNH 相关加工逻辑。
 
+### 复合通配样板
+
+- 使用未配置的通配样板 + AE 空白样板合成。
+- 左侧/右侧配置 1 条通配输入与通配输出。
+- 固定输入区拖入具体物品，最多 8 个，不参与材料展开。
+- 预览结果会按“通配输入 + 固定输入 -> 通配输出”生成 AE2 加工样板。
+
 ## 主要目录
 
 - `src/main/java/com//wildcardpattern/`：模组源码
-- `src/main/resources/assets/wildcardpattern/lang/`：中英文语言文件
+- `src/main/resources/assets/wildcardpattern/lang/`：中英文语言文件 
 - `src/main/resources/mixins.wildcardpattern.json`：Mixin 配置
 - `src/main/resources/mcmod.info`：模组元数据
 

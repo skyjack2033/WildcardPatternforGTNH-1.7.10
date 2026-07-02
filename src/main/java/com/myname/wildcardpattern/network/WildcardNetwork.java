@@ -14,5 +14,10 @@ public final class WildcardNetwork {
 
     public static void init() {
         CHANNEL.registerMessage(MessageUpdateWildcardConfig.Handler.class, MessageUpdateWildcardConfig.class, 0, Side.SERVER);
+        CHANNEL.registerMessage(
+            MessageUpdateCompositeWildcardConfig.Handler.class,
+            MessageUpdateCompositeWildcardConfig.class,
+            1,
+            Side.SERVER);
     }
 }

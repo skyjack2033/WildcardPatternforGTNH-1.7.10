@@ -19,6 +19,15 @@ public class WildcardGuiHandler implements IGuiHandler {
                 WildcardPatternWindow.createWindow(buildContext, player, x);
             return new com.gtnewhorizons.modularui.common.internal.wrapper.ModularUIContainer(context, window);
         }
+        if (id == WildcardPatternMod.GUI_COMPOSITE_WILDCARD_PATTERN) {
+            com.gtnewhorizons.modularui.api.screen.UIBuildContext buildContext =
+                new com.gtnewhorizons.modularui.api.screen.UIBuildContext(player);
+            com.gtnewhorizons.modularui.api.screen.ModularUIContext context =
+                new com.gtnewhorizons.modularui.api.screen.ModularUIContext(buildContext, () -> {});
+            com.gtnewhorizons.modularui.api.screen.ModularWindow window =
+                CompositeWildcardPatternWindow.createWindow(buildContext, player, x);
+            return new com.gtnewhorizons.modularui.common.internal.wrapper.ModularUIContainer(context, window);
+        }
         return null;
     }
 
@@ -31,6 +40,16 @@ public class WildcardGuiHandler implements IGuiHandler {
                 new com.gtnewhorizons.modularui.api.screen.ModularUIContext(buildContext, () -> {});
             com.gtnewhorizons.modularui.api.screen.ModularWindow window =
                 WildcardPatternWindow.createWindow(buildContext, player, x);
+            return new com.gtnewhorizons.modularui.common.internal.wrapper.ModularGui(
+                new com.gtnewhorizons.modularui.common.internal.wrapper.ModularUIContainer(context, window));
+        }
+        if (id == WildcardPatternMod.GUI_COMPOSITE_WILDCARD_PATTERN) {
+            com.gtnewhorizons.modularui.api.screen.UIBuildContext buildContext =
+                new com.gtnewhorizons.modularui.api.screen.UIBuildContext(player);
+            com.gtnewhorizons.modularui.api.screen.ModularUIContext context =
+                new com.gtnewhorizons.modularui.api.screen.ModularUIContext(buildContext, () -> {});
+            com.gtnewhorizons.modularui.api.screen.ModularWindow window =
+                CompositeWildcardPatternWindow.createWindow(buildContext, player, x);
             return new com.gtnewhorizons.modularui.common.internal.wrapper.ModularGui(
                 new com.gtnewhorizons.modularui.common.internal.wrapper.ModularUIContainer(context, window));
         }

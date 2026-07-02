@@ -8,7 +8,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import appeng.api.networking.crafting.ICraftingPatternDetails;
 import appeng.util.PatternMultiplierHelper;
+import com.myname.wildcardpattern.crafting.CompositeWildcardPatternGenerator;
 import com.myname.wildcardpattern.crafting.WildcardPatternGenerator;
+import com.myname.wildcardpattern.item.CompositeWildcardPatternState;
 import com.myname.wildcardpattern.item.WildcardPatternState;
 import net.minecraft.item.ItemStack;
 
@@ -20,7 +22,11 @@ public abstract class PatternMultiplierHelperMixin {
         if (!WildcardPatternGenerator.isWildcardPattern(stack)) {
             return;
         }
-        WildcardPatternState.applyBitModification(stack, bitMultiplier);
+        if (CompositeWildcardPatternGenerator.isCompositeWildcardPattern(stack)) {
+            CompositeWildcardPatternState.applyBitModification(stack, bitMultiplier);
+        } else {
+            WildcardPatternState.applyBitModification(stack, bitMultiplier);
+        }
         ci.cancel();
     }
 
@@ -30,7 +36,11 @@ public abstract class PatternMultiplierHelperMixin {
         CallbackInfoReturnable<Integer> cir) {
         ItemStack pattern = details == null ? null : details.getPattern();
         if (WildcardPatternGenerator.isWildcardPattern(pattern)) {
-            cir.setReturnValue(Integer.valueOf(WildcardPatternState.getMaxBitMultiplier(pattern)));
+            cir.setReturnValue(
+                Integer.valueOf(
+                    CompositeWildcardPatternGenerator.isCompositeWildcardPattern(pattern)
+                        ? CompositeWildcardPatternState.getMaxBitMultiplier(pattern)
+                        : WildcardPatternState.getMaxBitMultiplier(pattern)));
         }
     }
 
@@ -40,7 +50,11 @@ public abstract class PatternMultiplierHelperMixin {
         CallbackInfoReturnable<Integer> cir) {
         ItemStack pattern = details == null ? null : details.getPattern();
         if (WildcardPatternGenerator.isWildcardPattern(pattern)) {
-            cir.setReturnValue(Integer.valueOf(WildcardPatternState.getMaxBitDivider(pattern)));
+            cir.setReturnValue(
+                Integer.valueOf(
+                    CompositeWildcardPatternGenerator.isCompositeWildcardPattern(pattern)
+                        ? CompositeWildcardPatternState.getMaxBitDivider(pattern)
+                        : WildcardPatternState.getMaxBitDivider(pattern)));
         }
     }
 }

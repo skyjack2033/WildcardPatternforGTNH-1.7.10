@@ -18,6 +18,7 @@ public class WildcardPatternMod {
 
     public static final String MODID = "wildcardpattern";
     public static final int GUI_WILDCARD_PATTERN = 1;
+    public static final int GUI_COMPOSITE_WILDCARD_PATTERN = 2;
     public static final Logger LOG = LogManager.getLogger(MODID);
 
     @Mod.Instance(MODID)

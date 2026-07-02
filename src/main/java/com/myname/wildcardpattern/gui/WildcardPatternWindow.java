@@ -2,6 +2,7 @@ package com.myname.wildcardpattern.gui;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import com.gtnewhorizons.modularui.api.ModularUITextures;
@@ -30,6 +31,7 @@ import gregtech.api.objects.ItemData;
 import gregtech.api.util.GTOreDictUnificator;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.StatCollector;
 import net.minecraftforge.oredict.OreDictionary;
@@ -621,9 +623,9 @@ public final class WildcardPatternWindow {
             TextWidget rule = new TextWidget("");
             rule.setPos(18, rowY + 2);
             rule.setStringSupplier(() -> {
-                int absolute = state.dedupePageIndex * DEDUPE_LINES + lineIndex;
-                return absolute < state.dedupeRows.size()
-                    ? EnumChatFormatting.BLACK + "R" + (state.dedupeRows.get(absolute).rule + 1)
+                DedupeRow row = state.getDedupeRow(lineIndex);
+                return row != null
+                    ? row.getTopColor() + "R" + (row.rule + 1)
                     : "";
             });
             addDedupeWidget(builder, state, rule);
@@ -632,9 +634,9 @@ public final class WildcardPatternWindow {
             inputOre.setPos(42, rowY + 2);
             inputOre.setScale(0.74f);
             inputOre.setStringSupplier(() -> {
-                int absolute = state.dedupePageIndex * DEDUPE_LINES + lineIndex;
-                return absolute < state.dedupeRows.size()
-                    ? EnumChatFormatting.BLACK + trimMiddle(state.dedupeRows.get(absolute).getInputLine(), 26)
+                DedupeRow row = state.getDedupeRow(lineIndex);
+                return row != null
+                    ? row.getTopColor() + trimMiddle(row.getInputLine(), 26)
                     : "";
             });
             addDedupeWidget(builder, state, inputOre);
@@ -647,9 +649,9 @@ public final class WildcardPatternWindow {
             outputOre.setPos(194, rowY + 2);
             outputOre.setScale(0.74f);
             outputOre.setStringSupplier(() -> {
-                int absolute = state.dedupePageIndex * DEDUPE_LINES + lineIndex;
-                return absolute < state.dedupeRows.size()
-                    ? EnumChatFormatting.BLACK + trimMiddle(state.dedupeRows.get(absolute).getOutputLine(), 26)
+                DedupeRow row = state.getDedupeRow(lineIndex);
+                return row != null
+                    ? row.getTopColor() + trimMiddle(row.getOutputLine(), 26)
                     : "";
             });
             addDedupeWidget(builder, state, outputOre);
@@ -658,10 +660,9 @@ public final class WildcardPatternWindow {
             inputChoice.setPos(42, rowY + 17);
             inputChoice.setScale(0.7f);
             inputChoice.setStringSupplier(() -> {
-                int absolute = state.dedupePageIndex * DEDUPE_LINES + lineIndex;
-                return absolute < state.dedupeRows.size()
-                    ? EnumChatFormatting.DARK_GRAY
-                        + trimMiddle(state.getSelectedDedupeLabel(state.dedupeRows.get(absolute).inputOreName), 28)
+                DedupeRow row = state.getDedupeRow(lineIndex);
+                return row != null
+                    ? row.getDetailColor() + trimMiddle(row.getInputChoiceLine(state), 28)
                     : "";
             });
             addDedupeWidget(builder, state, inputChoice);
@@ -674,10 +675,9 @@ public final class WildcardPatternWindow {
             outputChoice.setPos(194, rowY + 17);
             outputChoice.setScale(0.7f);
             outputChoice.setStringSupplier(() -> {
-                int absolute = state.dedupePageIndex * DEDUPE_LINES + lineIndex;
-                return absolute < state.dedupeRows.size()
-                    ? EnumChatFormatting.DARK_GRAY
-                        + trimMiddle(state.getSelectedDedupeLabel(state.dedupeRows.get(absolute).outputOreName), 28)
+                DedupeRow row = state.getDedupeRow(lineIndex);
+                return row != null
+                    ? row.getDetailColor() + trimMiddle(row.getOutputChoiceLine(state), 28)
                     : "";
             });
             addDedupeWidget(builder, state, outputChoice);
@@ -1066,6 +1066,92 @@ public final class WildcardPatternWindow {
         return formatStackSize(Math.max(1, stack.stackSize)) + "x" + stack.getDisplayName();
     }
 
+    private static String formatPreviewLine(String line, int duplicateOutputCount) {
+        if (duplicateOutputCount <= 1) {
+            return line == null ? "" : line;
+        }
+        return trim(
+            tr("gui.wildcardpattern.duplicate_output") + " x" + duplicateOutputCount + " " + (line == null ? "" : line),
+            72);
+    }
+
+    private static Map<String, Integer> countOutputIdentities(List<PreviewRow> rows) {
+        Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        if (rows == null) {
+            return counts;
+        }
+        for (PreviewRow row : rows) {
+            if (row == null || row.outputKey.isEmpty()) {
+                continue;
+            }
+            Integer count = counts.get(row.outputKey);
+            counts.put(row.outputKey, Integer.valueOf(count == null ? 1 : count.intValue() + 1));
+        }
+        return counts;
+    }
+
+    private static int getDuplicateCount(Map<String, Integer> counts, String outputKey) {
+        if (counts == null || outputKey == null || outputKey.isEmpty()) {
+            return 0;
+        }
+        Integer count = counts.get(outputKey);
+        return count == null ? 0 : count.intValue();
+    }
+
+    private static void sortDuplicateOutputsFirst(List<PreviewRow> rows) {
+        rows.sort((left, right) -> Boolean.compare(right.hasDuplicateOutput(), left.hasDuplicateOutput()));
+    }
+
+    private static void sortDuplicateDedupeRowsFirst(List<DedupeRow> rows) {
+        rows.sort((left, right) -> Boolean.compare(right.hasDuplicateOutput(), left.hasDuplicateOutput()));
+    }
+
+    private static String getOutputIdentity(ItemStack stack) {
+        if (stack == null || stack.getItem() == null) {
+            return "";
+        }
+        String itemName = String.valueOf(net.minecraft.item.Item.itemRegistry.getNameForObject(stack.getItem()));
+        if (itemName == null || itemName.isEmpty() || "null".equals(itemName)) {
+            itemName = stack.getItem().getClass().getName();
+        }
+        NBTTagCompound tag = stack.getTagCompound();
+        return itemName + "@" + stack.getItemDamage() + "x" + Math.max(1, stack.stackSize)
+            + "#" + (tag == null ? "" : Integer.toHexString(tag.hashCode()));
+    }
+
+    private static String getOutputExcludeToken(ItemStack outputStack, String materialName) {
+        String outputOre = getAssociatedOreNameStatic(outputStack);
+        if (outputOre != null && !outputOre.isEmpty()) {
+            return outputOre;
+        }
+        return materialName == null ? "" : materialName;
+    }
+
+    private static String getAssociatedOreNameStatic(ItemStack stack) {
+        if (stack == null) {
+            return null;
+        }
+        ItemData association = GTOreDictUnificator.getAssociation(stack);
+        if (association != null && association.hasValidPrefixMaterialData()) {
+            return getPrefixName(association.mPrefix) + association.mMaterial.mMaterial.mName;
+        }
+        int[] oreIds = OreDictionary.getOreIDs(stack);
+        if (oreIds == null || oreIds.length == 0) {
+            return null;
+        }
+        for (int oreId : oreIds) {
+            String oreName = OreDictionary.getOreName(oreId);
+            if (oreName == null || oreName.isEmpty()) continue;
+            for (gregtech.api.enums.OrePrefixes prefix : GTCompat.orePrefixes()) {
+                String prefixName = getPrefixName(prefix);
+                if (!prefixName.isEmpty() && oreName.regionMatches(true, 0, prefixName, 0, prefixName.length())) {
+                    return oreName;
+                }
+            }
+        }
+        return null;
+    }
+
     private static String formatStackSize(long amount) {
         if (amount >= 100_000_000L) {
             return formatCompact(amount, 1_000_000_000L, "g");
@@ -1246,6 +1332,7 @@ public final class WildcardPatternWindow {
         private final String outputOreName;
         private final boolean inputDuplicate;
         private final boolean outputDuplicate;
+        private final int duplicateOutputCount;
 
         private DedupeRow(
             int rule,
@@ -1254,12 +1341,24 @@ public final class WildcardPatternWindow {
             String outputOreName,
             boolean inputDuplicate,
             boolean outputDuplicate) {
+            this(rule, materialName, inputOreName, outputOreName, inputDuplicate, outputDuplicate, 0);
+        }
+
+        private DedupeRow(
+            int rule,
+            String materialName,
+            String inputOreName,
+            String outputOreName,
+            boolean inputDuplicate,
+            boolean outputDuplicate,
+            int duplicateOutputCount) {
             this.rule = rule;
             this.materialName = materialName == null ? "" : materialName;
             this.inputOreName = inputOreName;
             this.outputOreName = outputOreName;
             this.inputDuplicate = inputDuplicate;
             this.outputDuplicate = outputDuplicate;
+            this.duplicateOutputCount = duplicateOutputCount;
         }
 
         private String getLine() {
@@ -1283,10 +1382,43 @@ public final class WildcardPatternWindow {
                 + label(state.getSelectedDedupeLabel(this.outputOreName));
         }
 
+        private String getInputChoiceLine(WindowState state) {
+            return state.getSelectedDedupeLabel(this.inputOreName);
+        }
+
+        private String getOutputChoiceLine(WindowState state) {
+            return state.getSelectedDedupeLabel(this.outputOreName);
+        }
+
+        private boolean hasDuplicateOutput() {
+            return this.duplicateOutputCount > 1;
+        }
+
+        private EnumChatFormatting getTopColor() {
+            return hasDuplicateOutput() ? EnumChatFormatting.RED : EnumChatFormatting.BLACK;
+        }
+
+        private EnumChatFormatting getDetailColor() {
+            return hasDuplicateOutput() ? EnumChatFormatting.RED : EnumChatFormatting.DARK_GRAY;
+        }
+
         private boolean matches(WindowState state, String search) {
             return NechSearchCompat.matches(getLine(), search)
                 || NechSearchCompat.matches(getChoiceLine(state), search)
+                || NechSearchCompat.matches(getDuplicateLine(), search)
                 || NechSearchCompat.matches(this.materialName, search);
+        }
+
+        private String getDuplicateLine() {
+            if (!hasDuplicateOutput()) {
+                return "";
+            }
+            return "R" + (this.rule + 1) + " "
+                + tr("gui.wildcardpattern.duplicate_output")
+                + " x"
+                + Math.max(2, this.duplicateOutputCount)
+                + " "
+                + label(this.outputOreName);
         }
 
         private static String label(String value) {
@@ -1298,13 +1430,33 @@ public final class WildcardPatternWindow {
         private final int rule;
         private final String materialName;
         private final String excludeToken;
+        private final String outputExcludeToken;
         private final String line;
+        private final String outputKey;
+        private final String outputLabel;
+        private final int duplicateOutputCount;
 
-        private PreviewRow(int rule, String materialName, String excludeToken, String line) {
+        private PreviewRow(
+            int rule,
+            String materialName,
+            String excludeToken,
+            String outputExcludeToken,
+            String line,
+            String outputKey,
+            String outputLabel,
+            int duplicateOutputCount) {
             this.rule = rule;
             this.materialName = materialName == null ? "" : materialName;
             this.excludeToken = excludeToken == null ? "" : excludeToken;
+            this.outputExcludeToken = outputExcludeToken == null ? "" : outputExcludeToken;
             this.line = line == null ? "" : line;
+            this.outputKey = outputKey == null ? "" : outputKey;
+            this.outputLabel = outputLabel == null ? "" : outputLabel;
+            this.duplicateOutputCount = duplicateOutputCount;
+        }
+
+        private boolean hasDuplicateOutput() {
+            return this.duplicateOutputCount > 1;
         }
     }
 
@@ -1574,7 +1726,7 @@ public final class WildcardPatternWindow {
 
             // Perform expensive pattern generation on a background thread
             Thread thread = new Thread(() -> {
-                List<PreviewRow> result = new ArrayList<>();
+                List<PreviewRow> rawRows = new ArrayList<>();
                 for (java.util.Map.Entry<Integer, ItemStack> entry : stacks.entrySet()) {
                     if (Thread.currentThread().isInterrupted()) return;
                     int rule = entry.getKey();
@@ -1583,17 +1735,44 @@ public final class WildcardPatternWindow {
                     for (WildcardPatternGenerator.GeneratedPattern pattern : patterns) {
                         if (Thread.currentThread().isInterrupted()) return;
                         String materialName = pattern.materialName;
-                        String line = "R" + (rule + 1) + " " + summarize(pattern.inputStack, pattern.outputStack);
                         String excludeToken = getPreviewExcludeToken(pattern.inputStack, pattern.outputStack, materialName);
-                        if (!filterSnapshot.isEmpty()
-                            && !NechSearchCompat.matches(line, filterSnapshot)
-                            && !NechSearchCompat.matches(materialName, filterSnapshot)
-                            && !NechSearchCompat.matches(excludeToken, filterSnapshot)) {
-                            continue;
-                        }
-                        result.add(new PreviewRow(rule, materialName, excludeToken, line));
+                        rawRows.add(
+                            new PreviewRow(
+                                rule,
+                                materialName,
+                                excludeToken,
+                                getOutputExcludeToken(pattern.outputStack, materialName),
+                                "R" + (rule + 1) + " " + summarize(pattern.inputStack, pattern.outputStack),
+                                getOutputIdentity(pattern.outputStack),
+                                formatPreviewStack(pattern.outputStack),
+                                0));
                     }
                 }
+                Map<String, Integer> outputCounts = countOutputIdentities(rawRows);
+                List<PreviewRow> result = new ArrayList<>();
+                for (PreviewRow row : rawRows) {
+                    int duplicateCount = getDuplicateCount(outputCounts, row.outputKey);
+                    String line = formatPreviewLine(row.line, duplicateCount);
+                    PreviewRow displayRow = new PreviewRow(
+                        row.rule,
+                        row.materialName,
+                        row.excludeToken,
+                        row.outputExcludeToken,
+                        line,
+                        row.outputKey,
+                        row.outputLabel,
+                        duplicateCount);
+                    if (!filterSnapshot.isEmpty()
+                        && !NechSearchCompat.matches(displayRow.line, filterSnapshot)
+                        && !NechSearchCompat.matches(displayRow.materialName, filterSnapshot)
+                        && !NechSearchCompat.matches(displayRow.excludeToken, filterSnapshot)
+                        && !NechSearchCompat.matches(displayRow.outputExcludeToken, filterSnapshot)
+                        && !NechSearchCompat.matches(displayRow.outputLabel, filterSnapshot)) {
+                        continue;
+                    }
+                    result.add(displayRow);
+                }
+                sortDuplicateOutputsFirst(result);
                 if (!Thread.currentThread().isInterrupted()) {
                     this.asyncPreviewResult = result;
                 }
@@ -1610,9 +1789,11 @@ public final class WildcardPatternWindow {
                 return;
             }
             List<DedupeRow> rows = new ArrayList<>();
+            Map<String, Integer> duplicateOutputs = collectDuplicateOutputCounts(preview);
             for (int rule = 0; rule < RULE_ROWS; rule++) {
-                collectDuplicateRows(preview, rows, rule);
+                collectDuplicateRows(preview, rows, rule, duplicateOutputs);
             }
+            sortDuplicateDedupeRowsFirst(rows);
             String filter = this.dedupeSearch == null ? "" : this.dedupeSearch.trim();
             for (DedupeRow row : rows) {
                 if (filter.isEmpty() || row.matches(this, filter)) {
@@ -1652,7 +1833,39 @@ public final class WildcardPatternWindow {
             return absolute >= 0 && absolute < this.dedupeRows.size() ? this.dedupeRows.get(absolute) : null;
         }
 
-        private void collectDuplicateRows(ItemStack preview, List<DedupeRow> rows, int rule) {
+        private Map<String, Integer> collectDuplicateOutputCounts(ItemStack preview) {
+            List<PreviewRow> generatedRows = new ArrayList<>();
+            for (int rule = 0; rule < RULE_ROWS; rule++) {
+                for (WildcardPatternGenerator.GeneratedPattern pattern :
+                    WildcardPatternGenerator.generateRulePreviewPatterns(preview, rule)) {
+                    String outputKey = getOutputIdentity(pattern.outputStack);
+                    if (outputKey.isEmpty()) {
+                        continue;
+                    }
+                    generatedRows.add(new PreviewRow(rule, pattern.materialName, "", "", "", outputKey, "", 0));
+                }
+            }
+            Map<String, Integer> outputCounts = countOutputIdentities(generatedRows);
+            Map<String, Integer> duplicateOutputs = new java.util.LinkedHashMap<>();
+            for (PreviewRow row : generatedRows) {
+                int duplicateCount = getDuplicateCount(outputCounts, row.outputKey);
+                if (duplicateCount <= 1) {
+                    continue;
+                }
+                String key = getDedupeDuplicateKey(row.rule, row.materialName);
+                Integer current = duplicateOutputs.get(key);
+                if (current == null || duplicateCount > current.intValue()) {
+                    duplicateOutputs.put(key, Integer.valueOf(duplicateCount));
+                }
+            }
+            return duplicateOutputs;
+        }
+
+        private void collectDuplicateRows(
+            ItemStack preview,
+            List<DedupeRow> rows,
+            int rule,
+            Map<String, Integer> duplicateOutputs) {
             for (String materialName : WildcardPatternGenerator.getCandidateMaterials(preview, rule)) {
                 String inputOreName = getOreName(this.inputs.get(rule), materialName);
                 String outputOreName = getOreName(this.outputs.get(rule), materialName);
@@ -1661,8 +1874,21 @@ public final class WildcardPatternWindow {
                 if (!inputDuplicate && !outputDuplicate) {
                     continue;
                 }
-                rows.add(new DedupeRow(rule, materialName, inputOreName, outputOreName, inputDuplicate, outputDuplicate));
+                int duplicateCount = getDuplicateCount(duplicateOutputs, getDedupeDuplicateKey(rule, materialName));
+                rows.add(
+                    new DedupeRow(
+                        rule,
+                        materialName,
+                        inputOreName,
+                        outputOreName,
+                        inputDuplicate,
+                        outputDuplicate,
+                        duplicateCount));
             }
+        }
+
+        private String getDedupeDuplicateKey(int rule, String materialName) {
+            return rule + "|" + (materialName == null ? "" : materialName);
         }
 
         private String getOreName(WildcardPatternEntry entry, String materialName) {
@@ -1778,7 +2004,10 @@ public final class WildcardPatternWindow {
             if (row == null) {
                 return;
             }
-            appendRuleExclude(row.rule, row.excludeToken.isEmpty() ? row.materialName : row.excludeToken);
+            String token = row.hasDuplicateOutput() && !row.outputExcludeToken.isEmpty()
+                ? row.outputExcludeToken
+                : row.excludeToken.isEmpty() ? row.materialName : row.excludeToken;
+            appendRuleExclude(row.rule, token);
             rebuildPreview();
         }
 
