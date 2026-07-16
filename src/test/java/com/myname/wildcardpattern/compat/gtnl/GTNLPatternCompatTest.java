@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,15 @@ class GTNLPatternCompatTest {
     @Test
     void nullNeverRepresentsAnAttachedPhysicalSlot() {
         assertFalse(GTNLPatternCompat.containsIdentity(new Object[] { null, new Object() }, null));
+    }
+
+    @Test
+    void duplicatePatternOwnersRemainFallbackDispatchCandidates() {
+        Object first = new Object();
+        Object preferred = new Object();
+        List<Object> ordered = GTNLPatternCompat.orderedAttachedCandidates(new Object[] { first, preferred }, preferred);
+
+        assertEquals(Arrays.asList(preferred, first), ordered);
     }
 
     @Test

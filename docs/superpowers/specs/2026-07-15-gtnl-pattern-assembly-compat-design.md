@@ -47,7 +47,9 @@ This is rejected because it changes recipe semantics: AE would treat one operati
 
 Keep GTNL absent from the compile and runtime dependency graph. Its `dev-290` build is distributed through GitHub Actions rather than a stable Maven coordinate, and making it a build dependency would make this mod less reproducible.
 
-Use string-targeted `@Pseudo` mixins plus a Mixin config plugin that checks for the `sciencenotleisure` target class before applying them. All method signatures exposed to the mixins use types already supplied by AE2, GT5U, Minecraft, or this mod. A small local bridge interface carries active-detail operations between the outer assembly mixin and the nested slot mixin. Reflective access is limited to GTNL-owned fields whose types cannot be named without a hard dependency.
+Use string-targeted `@Pseudo` mixins plus a Mixin config plugin that checks for the `sciencenotleisure` target class before applying them. All method signatures exposed to the mixins use types already supplied by AE2, GT5U, Minecraft, or this mod. Small local slot and cache bridge interfaces carry operations between the outer assembly mixin and the nested slot mixin. These interfaces live in `compat.gtnl`, outside the configured Mixin package, so Mixin never attempts to parse them as mixin classes. Reflective access is limited to GTNL-owned fields whose types cannot be named without a hard dependency.
+
+The config plugin reads target bytecode with Mixin's relocated ASM API (`org.spongepowered.asm.lib.*`). This avoids a runtime dependency on an external ASM package that is not guaranteed to exist in the 1.7.10 launch environment. The structural gate requires both GTNL's AE-owned item/fluid buffer fields, the methods used by the injections, and the hatch's direct `ICraftingProvider` interface before either optional mixin is applied. The `provideCrafting` injection also checks that interface before cancelling GTNL behavior, so a future structural mismatch still fails closed at runtime.
 
 The integration targets `com.science.gtnl.common.machine.hatch.SuperCraftingInputHatchME` and its nested `PatternSlot` implementation. GTNL injections use optional requirements and validate all reflected members before cancelling original behavior. Target selection must fail closed: if a future GTNL version changes the expected methods or fields, ordinary patterns must remain usable and the compatibility code must not partially advertise wildcard details without a valid dispatch map.
 
@@ -59,10 +61,14 @@ At `provideCrafting`:
 2. Iterate its physical pattern slots.
 3. For an ordinary pattern, retain GTNL's existing single-detail registration.
 4. For a wildcard pattern, call `WildcardPatternGenerator.generateAllDetails(patternStack, world)`.
-5. Store every returned detail in `patternDetailsPatternSlotMap` with the same owning physical slot.
+5. Store every returned detail in `patternDetailsPatternSlotMap` with a preferred owning physical slot.
 6. Advertise every detail with `ICraftingProviderHelper.addCraftingOption`.
 
 An empty or invalid expansion advertises nothing for that wildcard slot and must not affect neighboring slots.
+
+When multiple physical slots advertise equal generated details, GTNL's map can retain only one preferred owner for that key. Dispatch therefore probes the preferred attached slot first and then every other attached slot in physical order, rechecking generated-pattern ownership. An occupied equivalent slot cannot hide another free slot that can accept the same AE request.
+
+Each physical slot caches its expanded details and an ID-to-detail index when it is constructed or registered. Dispatch ownership checks query that index directly; they never regenerate the full wildcard expansion while probing fallback slots.
 
 ### Dispatch And Active Detail
 
@@ -74,9 +80,9 @@ At `pushPattern`:
 4. Preserve GTNL's fluid-packet checks and `insertItemsAndFluids` behavior.
 5. If insertion fails, do not leave a newly selected detail active unless the slot already contains inputs for it.
 
-While a wildcard slot contains inputs, methods used by GT recipe matching, especially `getPatternDetails` and `getPatternInputs`, must resolve against the active generated detail. Once the slot is empty, it may return to its representative detail until another generated request arrives.
+While a wildcard slot contains AE-buffered inputs, methods used by GT recipe matching, especially `getPatternDetails` and `getPatternInputs`, must resolve against the active generated detail. Once the AE buffers are empty, it may return to its representative detail until another generated request arrives.
 
-The nested-slot mixin updates the detail field that GTNL's existing `getPatternDetails` and `getPatternInputs` paths already read. This avoids reimplementing GTNL's shared-item, manual-inventory, and fluid aggregation logic. The bridge keeps the original representative detail available for initial display and for slots that have never received an expanded request.
+The nested-slot mixin updates the detail field that GTNL's existing `getPatternDetails` and `getPatternInputs` paths already read. Material identity and reload recovery inspect only GTNL's AE-owned `itemInventory` and `fluidInventory`; manual supplement slots must never select a wildcard material. If a slot is occupied only by manual supplements, or its buffered identity is unresolved, the mixin returns empty processing inputs so GTNL cannot run the representative recipe accidentally. The bridge keeps the original representative detail available for initial display and for slots that have never received an expanded request.
 
 Generated-pattern identity uses `WildcardGeneratedPatternId`, not object identity or the dragged display stack. This keeps dispatch stable across regenerated detail instances.
 
@@ -91,9 +97,11 @@ Persist the active generated-pattern ID and, where needed for immediate reconstr
 
 This mirrors the safety properties of the existing GregTech hatch compatibility and prevents a restart from reinterpreting bronze inputs as the representative aluminium recipe.
 
+Constructor-time regeneration is allowed when the world reference is temporarily `null`; the existing generator accepts that state and can still reconstruct generated IDs from pattern NBT. Deferring solely for a non-null world would discard the saved active ID before the slot becomes fully attached.
+
 ### Cache Invalidation
 
-Changing the active generated detail must invalidate any GTNL processing-logic recipe cache associated with that physical slot before the next recipe check. Removing or replacing a wildcard pattern must remove all generated-detail mappings owned by the old slot. Registration must also discard mappings to detached slots so stale AE requests fail cleanly.
+Changing the active generated detail must invalidate any GTNL processing-logic recipe cache associated with that physical slot before the next recipe check. The state machine increments a revision whenever active identity or resolution changes; the slot compares revisions and asks the parent cache bridge to invalidate GTNL processing logics after activation, recovery, clearing, or rollback. A HEAD hook on `isEmpty` performs this synchronization before GTNL consults its recipe cache, covering the transition where AE buffers drain but manual supplements keep the overall slot nonempty. Removing or replacing a wildcard pattern must remove all generated-detail mappings owned by the old slot. Registration must also discard mappings to detached slots so stale AE requests fail cleanly.
 
 ## Failure Handling
 
@@ -114,6 +122,12 @@ Automated coverage will isolate the compatibility state and identity decisions f
 - replacing a physical pattern removes stale generated mappings;
 - active generated ID survives NBT save/load;
 - ambiguous stored inputs do not select an arbitrary generated detail;
+- manual-only supplement slots do not select a generated material or expose processing inputs;
+- state identity and resolution transitions advance the cache revision;
+- draining AE buffers invalidates the generated recipe before a manual-only cache lookup;
+- dispatch ownership checks use cached generated IDs without regenerating expansions;
+- duplicate physical slots advertising the same generated detail fall back to another attached slot;
+- structurally similar hatches without `ICraftingProvider` are rejected before cancellation;
 - ordinary encoded patterns retain the original single-detail path;
 - absence of GTNL does not apply or load the optional mixins and does not affect the existing build.
 

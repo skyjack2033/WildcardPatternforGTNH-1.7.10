@@ -10,6 +10,17 @@
 
 **Pinned compatibility target:** GT-Not-Leisure `dev-290` commit `06cc841398ea4f7d6129fb8584002f0584ea05a8`, class `com.science.gtnl.common.machine.hatch.SuperCraftingInputHatchME`.
 
+## Post-review Implementation Amendments
+
+The task snippets below record the original implementation sequence. Final review and runtime validation added these constraints; the checked-in source is authoritative where an earlier snippet differs:
+
+- `GTNLPatternSlotBridge` and `GTNLPatternCacheBridge` live in `compat.gtnl`, outside the configured Mixin package. The cache bridge lets slot-level state changes invalidate the parent hatch without linking against GTNL classes.
+- `WildcardPatternMixinPlugin` uses Mixin's relocated `org.spongepowered.asm.lib.*` classes and validates GTNL's separate `itemInventory` and `fluidInventory` fields plus the hatch's direct `ICraftingProvider` interface before applying either optional mixin. The outer injection repeats the provider check before cancellation.
+- Active material identity and NBT recovery use only those AE-owned buffers. Manual supplement slots are deliberately excluded; a manual-only or unresolved slot returns empty processing inputs.
+- `GTNLPatternSlotState` tracks a revision for active-ID and resolution transitions. Activation, recovery, clearing, and rollback invalidate the relevant GTNL recipe cache through the parent bridge whenever that revision changes. The `isEmpty` HEAD hook catches AE-buffer drain before GTNL can reuse a cached generated recipe for manual supplements.
+- Constructor-time detail regeneration accepts a temporarily null world so saved generated IDs can be restored before the hatch is fully attached.
+- Equal generated details in multiple physical slots still share GTNL's single preferred map entry, but dispatch retries every attached owner in deterministic order so an occupied slot does not hide a free equivalent slot. Ownership uses the slot state's cached generated-ID index and never expands patterns in the fallback loop.
+
 ---
 
 ## File Map
@@ -22,7 +33,8 @@
 - Create `src/test/java/com/myname/wildcardpattern/compat/gtnl/GTNLPatternCompatTest.java`: map ownership and optional-target decision tests.
 - Create `src/main/java/com/myname/wildcardpattern/mixin/WildcardPatternMixinPlugin.java`: skip both GTNL mixins when either pinned target class is absent.
 - Create `src/test/java/com/myname/wildcardpattern/mixin/WildcardPatternMixinPluginTest.java`: plugin gating tests without loading GTNL.
-- Create `src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotBridge.java`: typed local contract between the two string-targeted mixins.
+- Create `src/main/java/com/myname/wildcardpattern/compat/gtnl/GTNLPatternSlotBridge.java`: typed local contract between the two string-targeted mixins.
+- Create `src/main/java/com/myname/wildcardpattern/compat/gtnl/GTNLPatternCacheBridge.java`: cache invalidation contract from the nested slot to the parent hatch.
 - Create `src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotMixin.java`: expand details, select the active child recipe, persist/recover its ID, and protect ambiguous buffered inputs.
 - Create `src/main/java/com/myname/wildcardpattern/mixin/GTNLSuperCraftingInputHatchMEMixin.java`: advertise all child recipes, map them to physical slots, safely dispatch, and clear GTNL recipe caches.
 - Modify `src/main/resources/mixins.wildcardpattern.json`: install the plugin and register the two optional mixins.
@@ -827,12 +839,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.FieldVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
-import org.objectweb.asm.tree.ClassNode;
+import org.spongepowered.asm.lib.ClassReader;
+import org.spongepowered.asm.lib.ClassVisitor;
+import org.spongepowered.asm.lib.FieldVisitor;
+import org.spongepowered.asm.lib.MethodVisitor;
+import org.spongepowered.asm.lib.Opcodes;
+import org.spongepowered.asm.lib.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
@@ -1010,7 +1022,7 @@ git commit -m "feat: gate optional GTNL mixins"
 ### Task 5: Make GTNL Pattern Slots Track The Selected Child Recipe
 
 **Files:**
-- Create: `src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotBridge.java`
+- Create: `src/main/java/com/myname/wildcardpattern/compat/gtnl/GTNLPatternSlotBridge.java`
 - Create: `src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotMixin.java`
 
 - [ ] **Step 1: Add the local bridge contract**
@@ -1018,12 +1030,11 @@ git commit -m "feat: gate optional GTNL mixins"
 Create `GTNLPatternSlotBridge.java`:
 
 ```java
-package com.myname.wildcardpattern.mixin;
+package com.myname.wildcardpattern.compat.gtnl;
 
 import java.util.List;
 
 import appeng.api.networking.crafting.ICraftingPatternDetails;
-import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotState;
 import net.minecraft.inventory.InventoryCrafting;
 import net.minecraft.world.World;
 
@@ -1069,6 +1080,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import appeng.api.networking.crafting.ICraftingPatternDetails;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternCompat;
+import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotBridge;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotState;
 import gregtech.api.enums.GTValues;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
@@ -1252,7 +1264,7 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
 
     @Unique
     private void wildcardpattern$refreshDetails(World world) {
-        if (this.wildcardpattern$state == null || world == null) {
+        if (this.wildcardpattern$state == null) {
             return;
         }
         this.wildcardpattern$state.replaceExpandedDetails(GTNLPatternCompat.expand(this.pattern, world));
@@ -1293,7 +1305,7 @@ Expected: `12 tests completed` with no failures.
 - [ ] **Step 5: Commit the slot bridge**
 
 ```powershell
-git add src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotBridge.java src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotMixin.java
+git add src/main/java/com/myname/wildcardpattern/compat/gtnl/GTNLPatternSlotBridge.java src/main/java/com/myname/wildcardpattern/mixin/GTNLPatternSlotMixin.java
 git commit -m "feat: track active GTNL wildcard details"
 ```
 
@@ -1707,10 +1719,11 @@ git commit -m "docs: describe GTNL pattern assembly support"
 Run:
 
 ```powershell
-./gradlew clean test build
+./gradlew clean --no-daemon
+./gradlew test build --no-daemon
 ```
 
-Expected: `BUILD SUCCESSFUL`; all `16` unit tests pass; `compileJava`, `processResources`, and `jar` complete successfully.
+Run these as separate Gradle invocations because this project enables parallel execution and `clean` can otherwise race the patched-Minecraft packaging tasks. Expected: both commands report `BUILD SUCCESSFUL`; all `38` unit tests pass; `compileJava`, `processResources`, and `jar` complete successfully.
 
 - [ ] **Step 2: Verify the built jar contains every compatibility class**
 

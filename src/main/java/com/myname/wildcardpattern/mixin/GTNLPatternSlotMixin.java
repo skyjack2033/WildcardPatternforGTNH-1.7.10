@@ -15,7 +15,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import appeng.api.networking.crafting.ICraftingPatternDetails;
+import com.myname.wildcardpattern.compat.gtnl.GTNLPatternCacheBridge;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternCompat;
+import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotBridge;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotState;
 import com.myname.wildcardpattern.crafting.WildcardPatternGenerator;
 import gregtech.api.enums.GTValues;
@@ -45,13 +47,15 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
     public IMetaTileEntity parentMTE;
 
     @Shadow
+    @Final
+    public List<ItemStack> itemInventory;
+
+    @Shadow
+    @Final
+    public List<FluidStack> fluidInventory;
+
+    @Shadow
     public abstract boolean isEmpty();
-
-    @Shadow
-    public abstract ItemStack[] getItemInputs();
-
-    @Shadow
-    public abstract FluidStack[] getFluidInputs();
 
     @Shadow
     public abstract boolean insertItemsAndFluids(InventoryCrafting table);
@@ -81,11 +85,15 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
             new GTNLPatternSlotState<>(this.wildcardpattern$representative, GTNLPatternCompat::generatedId);
         wildcardpattern$refreshDetails(parent.getBaseMetaTileEntity().getWorld());
         String savedId = saved == null ? "" : saved.getString(GTNLPatternCompat.ACTIVE_PATTERN_ID_KEY);
+        ItemStack[] bufferedItems = wildcardpattern$getBufferedItemInputs();
+        FluidStack[] bufferedFluids = wildcardpattern$getBufferedFluidInputs();
+        long previousRevision = this.wildcardpattern$state.getRevision();
         this.wildcardpattern$state.recover(
             savedId,
-            !isEmpty(),
-            details -> GTNLPatternCompat.inputsMatch(details, getItemInputs(), getFluidInputs()));
-        wildcardpattern$syncActiveDetail();
+            wildcardpattern$hasBufferedInputs(),
+            details -> GTNLPatternCompat.inputsMatch(details, bufferedItems, bufferedFluids));
+        wildcardpattern$applyActiveDetail();
+        wildcardpattern$invalidateIfChanged(previousRevision);
     }
 
     @Inject(method = "getPatternDetails", at = @At("HEAD"), require = 0)
@@ -93,10 +101,16 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
         wildcardpattern$syncActiveDetail();
     }
 
+    @Inject(method = "isEmpty", at = @At("HEAD"), require = 0)
+    private void wildcardpattern$syncBeforeEmptyCheck(CallbackInfoReturnable<Boolean> cir) {
+        wildcardpattern$syncActiveDetail();
+    }
+
     @Inject(method = "getPatternInputs", at = @At("HEAD"), cancellable = true, require = 0)
     private void wildcardpattern$guardAmbiguousInputs(CallbackInfoReturnable<GTDualInputPattern> cir) {
         wildcardpattern$syncActiveDetail();
-        if (this.wildcardpattern$state == null || !this.wildcardpattern$state.isUnresolved() || isEmpty()) {
+        if (this.wildcardpattern$state == null
+            || !this.wildcardpattern$state.shouldBlockProcessing(wildcardpattern$hasBufferedInputs(), !isEmpty())) {
             return;
         }
         GTDualInputPattern empty = new GTDualInputPattern();
@@ -113,7 +127,7 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
             return;
         }
         NBTTagCompound written = cir.getReturnValue();
-        String activeId = this.wildcardpattern$state.getPersistentId(!isEmpty());
+        String activeId = this.wildcardpattern$state.getPersistentId(wildcardpattern$hasBufferedInputs());
         if (activeId.isEmpty()) {
             written.removeTag(GTNLPatternCompat.ACTIVE_PATTERN_ID_KEY);
         } else {
@@ -148,15 +162,7 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
     @Override
     public boolean wildcardpattern$owns(ICraftingPatternDetails details, World world) {
         String requestedId = GTNLPatternCompat.generatedId(details);
-        if (requestedId.isEmpty()) {
-            return false;
-        }
-        for (ICraftingPatternDetails candidate : wildcardpattern$getRegistrationDetails(world)) {
-            if (requestedId.equals(GTNLPatternCompat.generatedId(candidate))) {
-                return true;
-            }
-        }
-        return false;
+        return this.wildcardpattern$state != null && this.wildcardpattern$state.containsId(requestedId);
     }
 
     @Override
@@ -165,18 +171,24 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
         if (this.wildcardpattern$state == null) {
             return null;
         }
-        if (!isEmpty() && this.wildcardpattern$state.getActiveId().isEmpty()) {
+        long previousRevision = this.wildcardpattern$state.getRevision();
+        boolean bufferedInputs = wildcardpattern$hasBufferedInputs();
+        if (bufferedInputs && this.wildcardpattern$state.getActiveId().isEmpty()) {
+            ItemStack[] bufferedItems = wildcardpattern$getBufferedItemInputs();
+            FluidStack[] bufferedFluids = wildcardpattern$getBufferedFluidInputs();
             this.wildcardpattern$state.recover(
                 "",
                 true,
-                candidate -> GTNLPatternCompat.inputsMatch(candidate, getItemInputs(), getFluidInputs()));
+                candidate -> GTNLPatternCompat.inputsMatch(candidate, bufferedItems, bufferedFluids));
         }
         GTNLPatternSlotState.Snapshot<ICraftingPatternDetails> before = this.wildcardpattern$state.snapshot();
-        if (!this.wildcardpattern$state.activate(details, !isEmpty())) {
+        if (!this.wildcardpattern$state.activate(details, bufferedInputs)) {
+            wildcardpattern$invalidateIfChanged(previousRevision);
             return null;
         }
         // The slot is still empty until pushPattern inserts the table.
         this.patternDetails = this.wildcardpattern$state.current(true);
+        wildcardpattern$invalidateIfChanged(previousRevision);
         return before;
     }
 
@@ -184,14 +196,11 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
     public void wildcardpattern$rollbackActivation(
         GTNLPatternSlotState.Snapshot<ICraftingPatternDetails> snapshot) {
         if (this.wildcardpattern$state != null && snapshot != null) {
+            long previousRevision = this.wildcardpattern$state.getRevision();
             this.wildcardpattern$state.restore(snapshot);
-            wildcardpattern$syncActiveDetail();
+            wildcardpattern$applyActiveDetail();
+            wildcardpattern$invalidateIfChanged(previousRevision);
         }
-    }
-
-    @Override
-    public String wildcardpattern$getActiveId() {
-        return this.wildcardpattern$state == null ? "" : this.wildcardpattern$state.getActiveId();
     }
 
     @Override
@@ -201,11 +210,13 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
 
     @Unique
     private void wildcardpattern$refreshDetails(World world) {
-        if (this.wildcardpattern$state == null || world == null) {
+        if (this.wildcardpattern$state == null) {
             return;
         }
+        long previousRevision = this.wildcardpattern$state.getRevision();
         this.wildcardpattern$state.replaceExpandedDetails(GTNLPatternCompat.expand(this.pattern, world));
-        wildcardpattern$syncActiveDetail();
+        wildcardpattern$applyActiveDetail();
+        wildcardpattern$invalidateIfChanged(previousRevision);
     }
 
     @Unique
@@ -213,7 +224,49 @@ public abstract class GTNLPatternSlotMixin implements GTNLPatternSlotBridge {
         if (this.wildcardpattern$state == null) {
             return;
         }
-        ICraftingPatternDetails current = this.wildcardpattern$state.current(!isEmpty());
+        long previousRevision = this.wildcardpattern$state.getRevision();
+        wildcardpattern$applyActiveDetail();
+        wildcardpattern$invalidateIfChanged(previousRevision);
+    }
+
+    @Unique
+    private void wildcardpattern$applyActiveDetail() {
+        ICraftingPatternDetails current = this.wildcardpattern$state.current(wildcardpattern$hasBufferedInputs());
         this.patternDetails = current == null ? this.wildcardpattern$representative : current;
+    }
+
+    @Unique
+    private void wildcardpattern$invalidateIfChanged(long previousRevision) {
+        if (this.wildcardpattern$state.getRevision() == previousRevision) {
+            return;
+        }
+        if (this.parentMTE instanceof GTNLPatternCacheBridge cacheBridge) {
+            cacheBridge.wildcardpattern$invalidatePatternSlot(this);
+        }
+    }
+
+    @Unique
+    private boolean wildcardpattern$hasBufferedInputs() {
+        for (ItemStack stack : this.itemInventory) {
+            if (stack != null && stack.stackSize > 0) {
+                return true;
+            }
+        }
+        for (FluidStack stack : this.fluidInventory) {
+            if (stack != null && stack.amount > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Unique
+    private ItemStack[] wildcardpattern$getBufferedItemInputs() {
+        return this.itemInventory.toArray(new ItemStack[this.itemInventory.size()]);
+    }
+
+    @Unique
+    private FluidStack[] wildcardpattern$getBufferedFluidInputs() {
+        return this.fluidInventory.toArray(new FluidStack[this.fluidInventory.size()]);
     }
 }

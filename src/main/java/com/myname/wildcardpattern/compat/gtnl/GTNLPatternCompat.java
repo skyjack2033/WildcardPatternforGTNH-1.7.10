@@ -1,6 +1,7 @@
 package com.myname.wildcardpattern.compat.gtnl;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +63,32 @@ public final class GTNLPatternCompat {
         if (values == null || candidate == null) {
             return false;
         }
+        for (Object value : values) {
+            if (value == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static List<Object> orderedAttachedCandidates(Object[] attachedSlots, Object preferred) {
+        List<Object> result = new ArrayList<>();
+        if (containsIdentity(attachedSlots, preferred)) {
+            result.add(preferred);
+        }
+        if (attachedSlots == null) {
+            return result;
+        }
+        for (Object candidate : attachedSlots) {
+            if (candidate == null || containsIdentity(result, candidate)) {
+                continue;
+            }
+            result.add(candidate);
+        }
+        return result;
+    }
+
+    private static boolean containsIdentity(Iterable<?> values, Object candidate) {
         for (Object value : values) {
             if (value == candidate) {
                 return true;

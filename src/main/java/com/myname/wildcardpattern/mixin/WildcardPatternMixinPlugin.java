@@ -7,11 +7,11 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.FieldVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
+import org.spongepowered.asm.lib.ClassReader;
+import org.spongepowered.asm.lib.ClassVisitor;
+import org.spongepowered.asm.lib.FieldVisitor;
+import org.spongepowered.asm.lib.MethodVisitor;
+import org.spongepowered.asm.lib.Opcodes;
 import org.spongepowered.asm.lib.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
@@ -87,14 +87,29 @@ public final class WildcardPatternMixinPlugin implements IMixinConfigPlugin {
 
         Set<String> requiredFields = requiredFields(className);
         Set<String> requiredMethods = requiredMethods(className);
-        if (requiredFields == null || requiredMethods == null) {
+        Set<String> requiredInterfaces = requiredInterfaces(className);
+        if (requiredFields == null || requiredMethods == null || requiredInterfaces == null) {
             return false;
         }
 
         Set<String> fields = new HashSet<>();
         Set<String> methods = new HashSet<>();
+        Set<String> directInterfaces = new HashSet<>();
         try {
             new ClassReader(classBytes).accept(new ClassVisitor(Opcodes.ASM5) {
+
+                @Override
+                public void visit(
+                    int version,
+                    int access,
+                    String name,
+                    String signature,
+                    String superName,
+                    String[] interfaces) {
+                    if (interfaces != null) {
+                        directInterfaces.addAll(Arrays.asList(interfaces));
+                    }
+                }
 
                 @Override
                 public FieldVisitor visitField(
@@ -121,7 +136,9 @@ public final class WildcardPatternMixinPlugin implements IMixinConfigPlugin {
         } catch (LinkageError | RuntimeException ignored) {
             return false;
         }
-        return fields.containsAll(requiredFields) && methods.containsAll(requiredMethods);
+        return fields.containsAll(requiredFields)
+            && methods.containsAll(requiredMethods)
+            && directInterfaces.containsAll(requiredInterfaces);
     }
 
     private static Set<String> requiredFields(String className) {
@@ -138,7 +155,9 @@ public final class WildcardPatternMixinPlugin implements IMixinConfigPlugin {
             return setOf(
                 "patternLnet/minecraft/item/ItemStack;",
                 "patternDetailsLappeng/api/networking/crafting/ICraftingPatternDetails;",
-                "parentMTELgregtech/api/interfaces/metatileentity/IMetaTileEntity;");
+                "parentMTELgregtech/api/interfaces/metatileentity/IMetaTileEntity;",
+                "itemInventoryLjava/util/List;",
+                "fluidInventoryLjava/util/List;");
         }
         return null;
     }
@@ -164,6 +183,16 @@ public final class WildcardPatternMixinPlugin implements IMixinConfigPlugin {
                 "getItemInputs()[Lnet/minecraft/item/ItemStack;",
                 "getFluidInputs()[Lnet/minecraftforge/fluids/FluidStack;",
                 "insertItemsAndFluids(Lnet/minecraft/inventory/InventoryCrafting;)Z");
+        }
+        return null;
+    }
+
+    private static Set<String> requiredInterfaces(String className) {
+        if (GTNLPatternCompat.HATCH_TARGET.equals(className)) {
+            return setOf("appeng/api/networking/crafting/ICraftingProvider");
+        }
+        if (GTNLPatternCompat.SLOT_TARGET.equals(className)) {
+            return setOf();
         }
         return null;
     }

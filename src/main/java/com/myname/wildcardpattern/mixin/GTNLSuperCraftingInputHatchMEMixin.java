@@ -20,7 +20,9 @@ import appeng.api.networking.crafting.ICraftingProvider;
 import appeng.api.networking.crafting.ICraftingProviderHelper;
 import com.glodblock.github.common.item.ItemFluidPacket;
 import com.myname.wildcardpattern.WildcardPatternMod;
+import com.myname.wildcardpattern.compat.gtnl.GTNLPatternCacheBridge;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternCompat;
+import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotBridge;
 import com.myname.wildcardpattern.compat.gtnl.GTNLPatternSlotState;
 import gregtech.api.interfaces.metatileentity.IMetaTileEntity;
 import net.minecraft.inventory.InventoryCrafting;
@@ -30,7 +32,7 @@ import net.minecraft.world.World;
 
 @Pseudo
 @Mixin(targets = GTNLPatternCompat.HATCH_TARGET, remap = false)
-public abstract class GTNLSuperCraftingInputHatchMEMixin {
+public abstract class GTNLSuperCraftingInputHatchMEMixin implements GTNLPatternCacheBridge {
 
     @Shadow
     public Map<ICraftingPatternDetails, Object> patternDetailsPatternSlotMap;
@@ -57,6 +59,11 @@ public abstract class GTNLSuperCraftingInputHatchMEMixin {
     private void wildcardpattern$provideExpandedPatterns(
         ICraftingProviderHelper craftingTracker,
         CallbackInfo ci) {
+        Object self = this;
+        if (!(self instanceof ICraftingProvider)) {
+            return;
+        }
+        ICraftingProvider provider = (ICraftingProvider) self;
         Object[] slots = wildcardpattern$getInternalSlots();
         if (slots == null || !wildcardpattern$hasWildcard(slots)) {
             return;
@@ -72,7 +79,6 @@ public abstract class GTNLSuperCraftingInputHatchMEMixin {
         }
         this.patternDetailsPatternSlotMap.clear();
         this.patternDetailsPatternSlotMap.putAll(rebuilt);
-        ICraftingProvider provider = (ICraftingProvider) (Object) this;
         for (ICraftingPatternDetails details : rebuilt.keySet()) {
             craftingTracker.addCraftingOption(provider, details);
         }
@@ -92,40 +98,43 @@ public abstract class GTNLSuperCraftingInputHatchMEMixin {
             cir.setReturnValue(false);
             return;
         }
-        Object rawSlot = this.patternDetailsPatternSlotMap.get(requested);
-        if (!GTNLPatternCompat.containsIdentity(slots, rawSlot)) {
-            GTNLPatternCompat.removeDetachedMappings(this.patternDetailsPatternSlotMap, slots);
-            rawSlot = wildcardpattern$findOwningSlot(slots, requested);
-        }
-        if (!(rawSlot instanceof GTNLPatternSlotBridge slot)
-            || !slot.wildcardpattern$isOperational()
-            || !slot.wildcardpattern$isWildcard()) {
-            cir.setReturnValue(false);
-            return;
-        }
         if (!isActive() || table == null || wildcardpattern$hasUnsupportedFluidPacket(table)) {
             cir.setReturnValue(false);
             return;
         }
 
-        String previousId = slot.wildcardpattern$getActiveId();
-        GTNLPatternSlotState.Snapshot<ICraftingPatternDetails> snapshot =
-            slot.wildcardpattern$beginActivation(requested);
-        if (snapshot == null) {
-            cir.setReturnValue(false);
+        Object preferred = this.patternDetailsPatternSlotMap.get(requested);
+        GTNLPatternCompat.removeDetachedMappings(this.patternDetailsPatternSlotMap, slots);
+        World world = wildcardpattern$getWorld();
+        for (Object rawSlot : GTNLPatternCompat.orderedAttachedCandidates(slots, preferred)) {
+            if (!(rawSlot instanceof GTNLPatternSlotBridge slot)
+                || !slot.wildcardpattern$isOperational()
+                || !slot.wildcardpattern$isWildcard()
+                || !slot.wildcardpattern$owns(requested, world)) {
+                continue;
+            }
+            GTNLPatternSlotState.Snapshot<ICraftingPatternDetails> snapshot =
+                slot.wildcardpattern$beginActivation(requested);
+            if (snapshot == null) {
+                continue;
+            }
+            if (!slot.wildcardpattern$insert(table)) {
+                slot.wildcardpattern$rollbackActivation(snapshot);
+                cir.setReturnValue(false);
+                return;
+            }
+            this.patternDetailsPatternSlotMap.put(requested, rawSlot);
+            this.justHadNewItems = true;
+            cir.setReturnValue(true);
             return;
         }
-        String selectedId = slot.wildcardpattern$getActiveId();
-        if (!slot.wildcardpattern$insert(table)) {
-            slot.wildcardpattern$rollbackActivation(snapshot);
-            cir.setReturnValue(false);
-            return;
-        }
-        if (!previousId.equals(selectedId)) {
-            GTNLPatternCompat.invalidateRecipeCache(this.processingLogics, rawSlot);
-        }
-        this.justHadNewItems = true;
-        cir.setReturnValue(true);
+        cir.setReturnValue(false);
+    }
+
+    @Override
+    @Unique
+    public void wildcardpattern$invalidatePatternSlot(Object slot) {
+        GTNLPatternCompat.invalidateRecipeCache(this.processingLogics, slot);
     }
 
     @Inject(method = "onPatternChange", at = @At("RETURN"), require = 0)
@@ -173,24 +182,6 @@ public abstract class GTNLSuperCraftingInputHatchMEMixin {
                 slot.wildcardpattern$getRegistrationDetails(world));
         }
         return rebuilt;
-    }
-
-    @Unique
-    private Object wildcardpattern$findOwningSlot(Object[] slots, ICraftingPatternDetails requested) {
-        World world = wildcardpattern$getWorld();
-        if (world == null) {
-            return null;
-        }
-        for (Object rawSlot : slots) {
-            if (rawSlot instanceof GTNLPatternSlotBridge slot
-                && slot.wildcardpattern$isOperational()
-                && slot.wildcardpattern$isWildcard()
-                && slot.wildcardpattern$owns(requested, world)) {
-                this.patternDetailsPatternSlotMap.put(requested, rawSlot);
-                return rawSlot;
-            }
-        }
-        return null;
     }
 
     @Unique

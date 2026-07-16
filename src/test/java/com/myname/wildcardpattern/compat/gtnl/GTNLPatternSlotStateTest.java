@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,9 +38,11 @@ class GTNLPatternSlotStateTest {
     void emptyingSlotRestoresRepresentativeDetail() {
         GTNLPatternSlotState<String> state = state("bronze");
         assertTrue(state.activate("bronze", false));
+        long activeRevision = state.getRevision();
 
         assertEquals(REPRESENTATIVE, state.current(false));
         assertEquals("", state.getPersistentId(false));
+        assertTrue(state.getRevision() > activeRevision);
     }
 
     @Test
@@ -70,6 +73,16 @@ class GTNLPatternSlotStateTest {
     }
 
     @Test
+    void manualOnlySlotBlocksProcessingUntilAeBufferArrives() {
+        GTNLPatternSlotState<String> state = state("bronze", "aluminium");
+
+        assertTrue(state.shouldBlockProcessing(false, true));
+        assertFalse(state.shouldBlockProcessing(false, false));
+        assertTrue(state.activate("bronze", false));
+        assertFalse(state.shouldBlockProcessing(true, true));
+    }
+
+    @Test
     void failedInsertionCanRestorePreviousSelection() {
         GTNLPatternSlotState<String> state = state("bronze", "aluminium");
         assertTrue(state.activate("bronze", false));
@@ -83,12 +96,49 @@ class GTNLPatternSlotStateTest {
     }
 
     @Test
+    void cacheRevisionChangesForIdentityAndResolutionTransitions() {
+        GTNLPatternSlotState<String> state = state("bronze", "aluminium");
+
+        long initial = state.getRevision();
+        assertTrue(state.activate("bronze", false));
+        long active = state.getRevision();
+        state.replaceExpandedDetails(Arrays.asList("aluminium"));
+        long unresolved = state.getRevision();
+        state.current(false);
+        long cleared = state.getRevision();
+
+        assertTrue(active > initial);
+        assertTrue(unresolved > active);
+        assertTrue(cleared > unresolved);
+    }
+
+    @Test
     void duplicateGeneratedIdsAreRegisteredOnce() {
         GTNLPatternSlotState<String> state = new GTNLPatternSlotState<>(REPRESENTATIVE, value -> value);
 
         state.replaceExpandedDetails(Arrays.asList("bronze", "bronze", "aluminium", null, ""));
 
         assertEquals(Arrays.asList("bronze", "aluminium"), state.getExpandedDetails());
+    }
+
+    @Test
+    void cachedIdLookupDoesNotReextractExpandedDetails() {
+        AtomicInteger extractions = new AtomicInteger();
+        GTNLPatternSlotState<String> state =
+            new GTNLPatternSlotState<>(REPRESENTATIVE, value -> {
+                extractions.incrementAndGet();
+                return value;
+            });
+        state.replaceExpandedDetails(Arrays.asList("bronze", "aluminium"));
+        extractions.set(0);
+
+        assertTrue(state.containsId("bronze"));
+        assertFalse(state.containsId("steel"));
+        assertEquals(0, extractions.get());
+
+        extractions.set(0);
+        assertTrue(state.activate("aluminium", false));
+        assertEquals(2, extractions.get(), "Activation should extract only the requested and canonical IDs");
     }
 
     private static GTNLPatternSlotState<String> state(String... details) {

@@ -14,9 +14,11 @@ public final class GTNLPatternSlotState<T> {
     private final T representative;
     private final Function<T, String> idExtractor;
     private List<T> expandedDetails = Collections.emptyList();
+    private Map<String, T> expandedDetailsById = Collections.emptyMap();
     private T active;
     private String activeId = "";
     private boolean unresolved;
+    private long revision;
 
     public GTNLPatternSlotState(T representative, Function<T, String> idExtractor) {
         this.representative = representative;
@@ -34,12 +36,11 @@ public final class GTNLPatternSlotState<T> {
             }
         }
         this.expandedDetails = Collections.unmodifiableList(new ArrayList<>(unique.values()));
+        this.expandedDetailsById = Collections.unmodifiableMap(unique);
         if (!this.activeId.isEmpty()) {
             T replacement = findById(this.activeId);
             if (replacement == null) {
-                this.active = null;
-                this.activeId = "";
-                this.unresolved = true;
+                setState(null, "", true);
             } else {
                 this.active = replacement;
             }
@@ -48,6 +49,10 @@ public final class GTNLPatternSlotState<T> {
 
     public List<T> getExpandedDetails() {
         return this.expandedDetails;
+    }
+
+    public boolean containsId(String id) {
+        return this.expandedDetailsById.containsKey(normalize(id));
     }
 
     public boolean activate(T requested, boolean occupied) {
@@ -59,9 +64,7 @@ public final class GTNLPatternSlotState<T> {
         if (occupied && (this.unresolved || this.activeId.isEmpty() || !this.activeId.equals(requestedId))) {
             return false;
         }
-        this.active = canonical;
-        this.activeId = requestedId;
-        this.unresolved = false;
+        setState(canonical, requestedId, false);
         return true;
     }
 
@@ -83,9 +86,7 @@ public final class GTNLPatternSlotState<T> {
                 continue;
             }
             if (unique != null && !idOf(unique).equals(idOf(candidate))) {
-                this.active = null;
-                this.activeId = "";
-                this.unresolved = true;
+                setState(null, "", true);
                 return null;
             }
             unique = candidate;
@@ -95,9 +96,7 @@ public final class GTNLPatternSlotState<T> {
             setActive(unique);
             return unique;
         }
-        this.active = null;
-        this.activeId = "";
-        this.unresolved = true;
+        setState(null, "", true);
         return null;
     }
 
@@ -121,38 +120,42 @@ public final class GTNLPatternSlotState<T> {
         return this.unresolved;
     }
 
+    public boolean shouldBlockProcessing(boolean bufferedInputs, boolean slotOccupied) {
+        return slotOccupied && (!bufferedInputs || this.unresolved || this.activeId.isEmpty());
+    }
+
+    public long getRevision() {
+        return this.revision;
+    }
+
     public Snapshot<T> snapshot() {
         return new Snapshot<>(this.active, this.activeId, this.unresolved);
     }
 
     public void restore(Snapshot<T> snapshot) {
-        this.active = snapshot.active;
-        this.activeId = snapshot.activeId;
-        this.unresolved = snapshot.unresolved;
+        setState(snapshot.active, snapshot.activeId, snapshot.unresolved);
     }
 
     private T findById(String id) {
-        if (id.isEmpty()) {
-            return null;
-        }
-        for (T detail : this.expandedDetails) {
-            if (id.equals(idOf(detail))) {
-                return detail;
-            }
-        }
-        return null;
+        return this.expandedDetailsById.get(normalize(id));
     }
 
     private void setActive(T detail) {
-        this.active = detail;
-        this.activeId = idOf(detail);
-        this.unresolved = false;
+        setState(detail, idOf(detail), false);
     }
 
     private void clear() {
-        this.active = null;
-        this.activeId = "";
-        this.unresolved = false;
+        setState(null, "", false);
+    }
+
+    private void setState(T nextActive, String nextActiveId, boolean nextUnresolved) {
+        String normalizedId = normalize(nextActiveId);
+        if (!this.activeId.equals(normalizedId) || this.unresolved != nextUnresolved) {
+            this.revision++;
+        }
+        this.active = nextActive;
+        this.activeId = normalizedId;
+        this.unresolved = nextUnresolved;
     }
 
     private String idOf(T value) {
